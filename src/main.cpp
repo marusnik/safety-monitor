@@ -1,60 +1,93 @@
 #include <iostream>
+#include <cstdint>
 #include <opencv2/opencv.hpp>
 #include <chrono>
 
 int main()
     {
-
-
+    /*************************************************************************************
+                                        CONSTANTS
+    *************************************************************************************/
     constexpr std::uint32_t     WARMUP_READ_FRAME_NUM =  10;
     constexpr std::uint32_t     FPS_READ_FRAME_NUM    = 100;
-    std::uint32_t               idx;    // loop variable
-    cv::Mat                     frame;
 
-    cv::VideoCapture cap(0, cv::CAP_V4L2);   // 0 = /dev/video0; V4L2 = the Linux video system
+    /************************************************************
+    Open video capture; if not successfully, throw an error
+    ************************************************************/
+    cv::VideoCapture cap( 0, cv::CAP_V4L2 );   /* 0 = /dev/video0; V4L2 = the Linux video system */
 
     if( !cap.isOpened() )
         {
-        std::cout << "Camera couldn't be open\n";
-        return( 0 );
+        std::cerr << "Camera couldn't be opened\n";
+        return( 1 );
         }
 
-    for( idx = 0; idx < WARMUP_READ_FRAME_NUM; idx++ )
+    /************************************************************
+    Waste a few reads until camera stabilize
+    ************************************************************/ 
+    cv::Mat            frame;
+
+    for( std::uint32_t idx = 0; idx < WARMUP_READ_FRAME_NUM; idx++ )
         {
         cap.read( frame );
         }
 
-    auto t0 = std::chrono::steady_clock::now();
+    /************************************************************
+    Make number of reads and time it for Frame Per Second (FPS)
+    calculation. Use just sucessful reads for calculation, and 
+    report failed ones
+    ************************************************************/
+    cv::Mat            last_good_frame;
+    std::uint32_t      num_failed_frame_reads = 0;
 
-    for( idx = 0; idx < FPS_READ_FRAME_NUM; idx++ )
+    auto time_0 = std::chrono::steady_clock::now();
+    
+    for( std::uint32_t idx = 0; idx < FPS_READ_FRAME_NUM; idx++ )
         {
-        cap.read( frame );
+        if ( !cap.read( frame ) || frame.empty() )
+            {
+            num_failed_frame_reads++;
+            }
+        else
+            {
+            frame.copyTo( last_good_frame );
+            }        
         }
 
-    auto t1 = std::chrono::steady_clock::now();
+    auto time_1 = std::chrono::steady_clock::now();
 
-    double seconds = std::chrono::duration<double>(t1 - t0).count();
-
-
-    if ( !cap.read( frame ) )
+    if ( num_failed_frame_reads != 0 )
         {
-        std::cout << "Camera couldn't read the frame\n";
+        std::cerr << "Number of failed frame reads is " << num_failed_frame_reads << "\n";
+        }
+
+    /************************************************************
+    Report last suceffully captured frame's size and FPS
+    ************************************************************/
+    if ( last_good_frame.empty() )
+        {
+        std::cerr << "No frames captured\n";
+        return( 1 );
+        }
+    else
+        {
+        const double seconds = std::chrono::duration<double>( time_1 - time_0 ).count();
+
+        std::cout << "Captured pic width is "  << last_good_frame.cols << "\n";
+        std::cout << "Captured pic height is " << last_good_frame.rows << "\n";
+        std::cout << "Frames per second is "   << ( ( FPS_READ_FRAME_NUM - num_failed_frame_reads ) / seconds ) << "\n";
+
+        /************************************************************
+        Save last frame as jpg image
+        ************************************************************/
+        if ( !cv::imwrite("frame.jpg", frame) )
+            {
+            std::cerr << "Last good frame NOT saved\n";
+            return( 1 );
+            }
+
         return( 0 );
+
         }
-
-    if ( frame.empty() )
-        {
-        std::cout << "Camera couldn't read the frame\n";
-        return( 0 );
-        }
-
-    std::uint32_t    pic_width  = frame.cols;
-    std::uint32_t    pic_height = frame.rows;
-
-    std::cout << "Captured pic width is "  << pic_width                    << "\n";
-    std::cout << "Captured pic height is " << pic_height                   << "\n";
-    std::cout << "Frames per second is "   << FPS_READ_FRAME_NUM / seconds << "\n";
-
-    cv::imwrite("frame.jpg", frame);         // save as JPEG
 
     }

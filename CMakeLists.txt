@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)          # oldest CMake version this file supports
 project(safety_monitor LANGUAGES CXX)         # project name; C++ only
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 set(CMAKE_CXX_STANDARD 20)                    # use C++20
 set(CMAKE_CXX_STANDARD_REQUIRED ON)           # fail if the compiler can't do C++20
 
