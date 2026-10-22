@@ -1,3 +1,0 @@
-/home/marusnik/safety-monitor/build/CMakeFiles/safety_monitor.dir
-/home/marusnik/safety-monitor/build/CMakeFiles/edit_cache.dir
-/home/marusnik/safety-monitor/build/CMakeFiles/rebuild_cache.dir

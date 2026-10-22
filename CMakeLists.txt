@@ -6,3 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)           # fail if the compiler can't do C+
 
 add_executable(safety_monitor src/main.cpp)   # build a program called safety_monitor from main.cpp
 target_compile_options(safety_monitor PRIVATE -Wall -Wextra -Wconversion)   # strict warnings, as before
+
+find_package(OpenCV REQUIRED)                                   # after project(...)
+# ...
+target_link_libraries(safety_monitor PRIVATE ${OpenCV_LIBS})    # after add_executable(...)
