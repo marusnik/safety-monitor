@@ -1,6 +1,3 @@
-build/
+build*/
 frame.jpg
-frame_0.jpg
-frame_1.jpg
-frame_2.jpg
-frame_3.jpg
+frame_*.jpg

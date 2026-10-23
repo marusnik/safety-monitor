@@ -12,8 +12,12 @@ target_include_directories(safety_monitor PRIVATE include)
 add_executable(test_frame_queue tests/test_frame_queue.cpp)
 target_include_directories(test_frame_queue PRIVATE include)
 
+add_executable(test_thread_safe_queue tests/test_thread_safe_queue.cpp)
+target_include_directories(test_thread_safe_queue PRIVATE include)
+target_link_libraries(test_thread_safe_queue PRIVATE Threads::Threads)
+
 target_compile_options(safety_monitor PRIVATE -Wall -Wextra -Wconversion)   # strict warnings, as before
 
 find_package(OpenCV REQUIRED)                                   # after project(...)
-# ...
+find_package(Threads REQUIRED)
 target_link_libraries(safety_monitor PRIVATE ${OpenCV_LIBS})    # after add_executable(...)
