@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug safety_monitor",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/safety_monitor",
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "preLaunchTask": "cmake build"
+    }
+  ]
+}
