@@ -98,21 +98,12 @@ int frame_copy_experiment( cv::VideoCapture& cap )
         buffer.push( shared_frame );
         }
 
-    buffer.pop( test_frame );
-    std::cout << static_cast<void*>( test_frame.image.data ) << "\n";
-    cv::imwrite( "frame_0.jpg", test_frame.image );
-
-    buffer.pop( test_frame );
-    std::cout << static_cast<void*>( test_frame.image.data ) << "\n";
-    cv::imwrite( "frame_1.jpg", test_frame.image );
-
-    buffer.pop( test_frame );
-    std::cout << static_cast<void*>( test_frame.image.data ) << "\n";
-    cv::imwrite( "frame_2.jpg", test_frame.image );
-
-    buffer.pop( test_frame );
-    std::cout << static_cast<void*>( test_frame.image.data ) << "\n";
-    cv::imwrite( "frame_3.jpg", test_frame.image );
+    for( std::uint32_t idx=0; idx < 4; idx++ )
+        {
+        buffer.pop( test_frame );
+        std::cout << static_cast<void*>( test_frame.image.data ) << "\n";
+        cv::imwrite( "frame_" + std::to_string( idx ) +".jpg", test_frame.image );
+        }
 
     return( 0 );
 
