@@ -3,6 +3,8 @@
 #include <opencv2/opencv.hpp>
 #include <chrono>
 
+#include "frame_queue.hpp"
+
 int main()
     {
     /*************************************************************************************
