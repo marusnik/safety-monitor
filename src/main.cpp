@@ -7,6 +7,7 @@
 #include <iostream>
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include "frame.hpp"
 #include "thread_safe_queue.hpp"
 #include "person_detector.hpp"
@@ -100,7 +101,7 @@ void processing_loop( FrameQueue&     queue,
     Frame    f;
 
     /************************************************************
-     Loop until shutdown or timout happens
+     Loop until shutdown
     ************************************************************/
     while ( true ) 
         {
@@ -132,7 +133,7 @@ void processing_loop( FrameQueue&     queue,
          Detect people in the image
         ************************************************************/
         const std::vector<Detection>    detections = detector.detect( f.image );
-        if ( detections.size() > 0 )
+        if ( !detections.empty() )
             {
             ++stats.num_of_proc_frames_with_detection;
             }
@@ -140,7 +141,7 @@ void processing_loop( FrameQueue&     queue,
         /************************************************************
          Calculate latency, between when the image was captured to now
         ************************************************************/
-        double milli_sec = \
+        double milli_sec = 
         std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - f.captured_at ).count();
 
         stats.latency_sum_ms = stats.latency_sum_ms + milli_sec;
@@ -155,6 +156,29 @@ void processing_loop( FrameQueue&     queue,
         } /* while( true ) */
 
     } /* processing_loop() */
+
+
+
+
+std::optional<PersonDetector> make_detector( float min_confidence )
+    {
+    try
+        {
+         /************************************************************
+         Consturct a detector object with specified minimum confidence
+        ************************************************************/
+        return PersonDetector( "models/frozen_inference_graph.pb",
+                               "models/ssd_mobilenet_v2_coco_2018_03_29.pbtxt",
+                               min_confidence );
+        }
+    catch ( const std::exception& e )
+        {
+        std::cerr << "Detector setup failed: " << e.what() << '\n';
+        return std::nullopt;
+        }
+
+    } /* make_detector */
+
 
 
 
@@ -198,21 +222,36 @@ int main()
         cap.read( frame );
         }
 
+    std::optional<PersonDetector> detector = make_detector( MIN_CONFIDENCE );
+
     /************************************************************
-     Consturct a detector object with minimum confidence; and run 
-     one warm-up detection on a frame before starting the 
-     processing thread
-    ************************************************************/
-    PersonDetector    detector( "models/frozen_inference_graph.pb",
-                                "models/ssd_mobilenet_v2_coco_2018_03_29.pbtxt",
-                                MIN_CONFIDENCE );
-    detector.detect( frame );    
+     Missing model files, exit before any thread exists
+    ************************************************************/ 
+    if ( !detector )
+        {
+        return( 1 );
+        }
+
+    /************************************************************
+     Run one warm-up detection on a frame before starting the 
+     processing thread. The first detection takes longer, and 
+     we don't want it to throw off latency statistics
+    ************************************************************/ 
+    if( !frame.empty() )
+        {
+        detector->detect( frame );
+        }
+    else
+        {
+        return( 1 );
+        }
+    
 
     /************************************************************
      Spin up the capture and processing threads
     ************************************************************/
     std::thread camera( [ & ] { camera_loop( cap, queue, running, cstats ); } );
-    std::thread worker( [ & ] { processing_loop( queue, pstats, detector ); } );
+    std::thread worker( [ & ] { processing_loop( queue, pstats, *detector ); } );
 
     /************************************************************
      Run for a while and then ask the camera thread to stop
@@ -227,15 +266,22 @@ int main()
      Print capture and processing statistics
     ************************************************************/    
     std::cout << "---------------------------------\n"
-              << "Frames Per Second [ms]: " << static_cast<double>( cstats.captured ) / static_cast<double>( CAM_RUN_PERIOD_SEC ) << "\n"
-              << "Processed FSP [ms]: "     << static_cast<double>( pstats.processed ) / static_cast<double>( CAM_RUN_PERIOD_SEC ) << "\n"
+              << "Frames Per Second: "      << static_cast<double>( cstats.captured ) / static_cast<double>( CAM_RUN_PERIOD_SEC ) << "\n"
+              << "Processed FSP: "          << static_cast<double>( pstats.processed ) / static_cast<double>( CAM_RUN_PERIOD_SEC ) << "\n"
               << "Dropped Frames: "         << cstats.dropped << "\n"
               << "Failed to Capture: "      << cstats.failed << "\n"
               << "Number of Timeouts: "     << pstats.timeouts << "\n"
               << "Processed Frames: "       << pstats.processed << "\n"
-              << "Frames with Detection: "  << pstats.num_of_proc_frames_with_detection << "\n"
-              << "Average Latency [ms]: "   << pstats.latency_sum_ms / static_cast<double>( pstats.processed ) << "\n"
-              << "Max Latency [ms]: "       << pstats.latency_max_ms << "\n"
+              << "Frames with Detection: "  << pstats.num_of_proc_frames_with_detection << "\n";
+              if ( pstats.processed > 0 )
+                  {
+                  std::cout << "Average Latency [ms]: " << pstats.latency_sum_ms / static_cast<double>( pstats.processed ) << "\n";
+                  }
+              else
+                  {
+                  std::cout << "Average Latency [ms]: n/a (no processed frames)\n";
+                  }
+    std::cout << "Max Latency [ms]: "       << pstats.latency_max_ms << "\n"
               << "Accounting " << ( cstats.captured == pstats.processed + cstats.dropped ? "OK" : "MISMATCH" ) << "\n"
               << "---------------------------------\n";
 
