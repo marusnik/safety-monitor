@@ -1,3 +1,12 @@
 build*/
-frame.jpg
-frame_*.jpg
+models/
+
+# Camera output: never commit (may contain people or private spaces)
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.mp4
+*.avi
+data/
+recordings/

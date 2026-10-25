@@ -9,22 +9,24 @@
 #include <cstdint>
 #include "frame.hpp"
 #include "thread_safe_queue.hpp"
+#include "person_detector.hpp"
 
 
 /*************************************************************************************
                                       CLASSES
 *************************************************************************************/
-using FrameQueue = ThreadSafeQueue<Frame, 4>;     
+using FrameQueue = ThreadSafeQueue< Frame, 1 >;
 
 struct CaptureStats { std::uint64_t captured = 0;           // written ONLY by the camera thread
                       std::uint64_t failed   = 0;
                       std::uint64_t dropped  = 0;
     };
 
-struct ProcessStats { std::uint64_t processed      = 0;     // written ONLY by the processing thread
-                      std::uint64_t timeouts       = 0;
-                      double        latency_sum_ms = 0.0;
-                      double        latency_max_ms = 0.0;
+struct ProcessStats { std::uint64_t processed                         = 0;     // written ONLY by the processing thread
+                      std::uint64_t timeouts                          = 0;
+                      std::uint64_t num_of_proc_frames_with_detection = 0;
+                      double        latency_sum_ms                    = 0.0;
+                      double        latency_max_ms                    = 0.0;
     };
 
 
@@ -83,19 +85,30 @@ void camera_loop( cv::VideoCapture &         cap,
 
 
 
-void processing_loop( FrameQueue&   queue, 
-                      ProcessStats& stats )
+void processing_loop( FrameQueue&     queue, 
+                      ProcessStats&   stats,
+                      PersonDetector& detector )
     {
+    /************************************************************
+                            CONSTANTS
+    ************************************************************/
+    constexpr int64_t    WAIT_FOR_NEW_FRAME_MS = 500;
 
-    Frame f;
+    /************************************************************
+                            VARIABLES
+    ************************************************************/
+    Frame    f;
 
+    /************************************************************
+     Loop until shutdown or timout happens
+    ************************************************************/
     while ( true ) 
         {
 
         /************************************************************
          Pop the frame
         ************************************************************/
-        PopResult r = queue.pop_wait( f, std::chrono::milliseconds( 500 ) );
+        PopResult r = queue.pop_wait( f, std::chrono::milliseconds( WAIT_FOR_NEW_FRAME_MS ) );
 
         /************************************************************
          Normal shutdown
@@ -106,28 +119,29 @@ void processing_loop( FrameQueue&   queue,
             }
 
         /************************************************************
-         If camera timed out, go to Stop (continue for now)
+         If camera timed out, go to Stop (continue for now, TODO)
         ************************************************************/
         if ( r == PopResult::TIMEOUT ) 
             {
             ++stats.timeouts;
-            std::cerr << "No frame for 500 ms: camera silent\n";
+            std::cerr << "No frame for " << WAIT_FOR_NEW_FRAME_MS << " ms: camera silent\n";
             continue;
             }
 
         /************************************************************
-         Grayscale and blurre the image
+         Detect people in the image
         ************************************************************/
-        cv::Mat    gray;
-        cv::Mat    blurred;
-
-        cv::cvtColor( f.image, gray, cv::COLOR_BGR2GRAY );
-        cv::GaussianBlur( gray, blurred, cv::Size( 9, 9 ), 0 );
+        const std::vector<Detection>    detections = detector.detect( f.image );
+        if ( detections.size() > 0 )
+            {
+            ++stats.num_of_proc_frames_with_detection;
+            }
         
         /************************************************************
          Calculate latency, between when the image was captured to now
         ************************************************************/
-        double milli_sec = std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - f.captured_at).count();
+        double milli_sec = \
+        std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - f.captured_at ).count();
 
         stats.latency_sum_ms = stats.latency_sum_ms + milli_sec;
 
@@ -151,6 +165,7 @@ int main()
     *************************************************************************************/
     constexpr std::uint32_t     WARMUP_READ_FRAME_NUM =  10;
     constexpr std::uint32_t     CAM_RUN_PERIOD_SEC    =  10;
+    constexpr float             MIN_CONFIDENCE        =  0.3f;
 
     /*************************************************************************************
                                         VARIABLES
@@ -161,9 +176,11 @@ int main()
     ProcessStats      pstats;
 
     /************************************************************
-    Open video capture; if not successfully, throw an error
+     Open video capture; if not successfully, throw an error
+     0 = /dev/video0
+     V4L2 = the Linux video system
     ************************************************************/
-    cv::VideoCapture cap( 0, cv::CAP_V4L2 );   /* 0 = /dev/video0; V4L2 = the Linux video system */
+    cv::VideoCapture cap( 0, cv::CAP_V4L2 );  
 
     if( !cap.isOpened() )
         {
@@ -172,7 +189,7 @@ int main()
         }
 
     /************************************************************
-    Waste a few reads until camera stabilize
+     Waste a few reads until camera stabilize
     ************************************************************/ 
     cv::Mat            frame;
 
@@ -182,10 +199,20 @@ int main()
         }
 
     /************************************************************
+     Consturct a detector object with minimum confidence; and run 
+     one warm-up detection on a frame before starting the 
+     processing thread
+    ************************************************************/
+    PersonDetector    detector( "models/frozen_inference_graph.pb",
+                                "models/ssd_mobilenet_v2_coco_2018_03_29.pbtxt",
+                                MIN_CONFIDENCE );
+    detector.detect( frame );    
+
+    /************************************************************
      Spin up the capture and processing threads
     ************************************************************/
     std::thread camera( [ & ] { camera_loop( cap, queue, running, cstats ); } );
-    std::thread worker( [ & ] { processing_loop( queue, pstats ); } );
+    std::thread worker( [ & ] { processing_loop( queue, pstats, detector ); } );
 
     /************************************************************
      Run for a while and then ask the camera thread to stop
@@ -206,6 +233,7 @@ int main()
               << "Failed to Capture: "      << cstats.failed << "\n"
               << "Number of Timeouts: "     << pstats.timeouts << "\n"
               << "Processed Frames: "       << pstats.processed << "\n"
+              << "Frames with Detection: "  << pstats.num_of_proc_frames_with_detection << "\n"
               << "Average Latency [ms]: "   << pstats.latency_sum_ms / static_cast<double>( pstats.processed ) << "\n"
               << "Max Latency [ms]: "       << pstats.latency_max_ms << "\n"
               << "Accounting " << ( cstats.captured == pstats.processed + cstats.dropped ? "OK" : "MISMATCH" ) << "\n"
