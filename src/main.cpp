@@ -243,6 +243,7 @@ int main()
         }
     else
         {
+        std::cerr << "No frame from camera during warm-up\n";
         return( 1 );
         }
     
@@ -267,7 +268,7 @@ int main()
     ************************************************************/    
     std::cout << "---------------------------------\n"
               << "Frames Per Second: "      << static_cast<double>( cstats.captured ) / static_cast<double>( CAM_RUN_PERIOD_SEC ) << "\n"
-              << "Processed FSP: "          << static_cast<double>( pstats.processed ) / static_cast<double>( CAM_RUN_PERIOD_SEC ) << "\n"
+              << "Processed FPS: "          << static_cast<double>( pstats.processed ) / static_cast<double>( CAM_RUN_PERIOD_SEC ) << "\n"
               << "Dropped Frames: "         << cstats.dropped << "\n"
               << "Failed to Capture: "      << cstats.failed << "\n"
               << "Number of Timeouts: "     << pstats.timeouts << "\n"
@@ -275,7 +276,8 @@ int main()
               << "Frames with Detection: "  << pstats.num_of_proc_frames_with_detection << "\n";
               if ( pstats.processed > 0 )
                   {
-                  std::cout << "Average Latency [ms]: " << pstats.latency_sum_ms / static_cast<double>( pstats.processed ) << "\n";
+                  std::cout << "Average Pipeline Latency [ms]: "      << pstats.latency_sum_ms / static_cast<double>( pstats.processed ) << "\n";
+                  std::cout << "Camera Frame Interval (1/FPS) [ms]: " << 1000.0 * ( 1 / ( static_cast<double>( cstats.captured ) / static_cast<double>( CAM_RUN_PERIOD_SEC ) ) ) << "\n";
                   }
               else
                   {

@@ -37,7 +37,7 @@ int main( int argc, char* argv[] )
         const std::vector<Detection>    detections = detector.detect( image );
         std::cout << "Persons found: " << detections.size() << '\n';
         
-        for ( int idx = 0; idx < detections.size(); ++idx )
+        for ( size_t idx = 0; idx < detections.size(); ++idx )
             {
             const Detection& d = detections[ idx ];
             std::cout << "  box " << d.box << "  conf " << d.confidence << '\n';
