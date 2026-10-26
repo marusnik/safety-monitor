@@ -28,6 +28,8 @@ struct ProcessStats { std::uint64_t processed                         = 0;     /
                       std::uint64_t num_of_proc_frames_with_detection = 0;
                       double        latency_sum_ms                    = 0.0;
                       double        latency_max_ms                    = 0.0;
+                      double        detection_time_sum_ms             = 0.0;
+                      double        frame_age_sum_ms                  = 0.0;
     };
 
 
@@ -48,7 +50,7 @@ void camera_loop( cv::VideoCapture &         cap,
         Frame f;                                   // fresh Frame → fresh pixel buffer
 
         /************************************************************
-         Mark as failed if capture can't read or image is empty
+         Mark as failed if camera can't read or image is empty
         ************************************************************/
         if ( !cap.read( f.image ) 
           || f.image.empty() ) 
@@ -59,7 +61,7 @@ void camera_loop( cv::VideoCapture &         cap,
             }
 
         /************************************************************
-         Fill the rest of the Frame
+         Fill the rest of the Frame, timestamp and order number
         ************************************************************/            
         f.captured_at = std::chrono::steady_clock::now();
         f.sequence    = sequence++;
@@ -130,16 +132,39 @@ void processing_loop( FrameQueue&     queue,
             }
 
         /************************************************************
+         Calculate average frame age for statistics
+        ************************************************************/
+        if ( r == PopResult::POPPED ) 
+            {
+            stats.frame_age_sum_ms = stats.frame_age_sum_ms + std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - f.captured_at ).count();
+            }
+
+        /************************************************************
+         Detect people in the image; time it for statistics
+        ************************************************************/
+        const auto    t0 = std::chrono::steady_clock::now();
+        const std::vector<Detection>    detections = detector.detect( f.image );
+        const auto    t1 = std::chrono::steady_clock::now();
+
+        stats.detection_time_sum_ms = stats.detection_time_sum_ms + std::chrono::duration<double, std::milli>( t1 - t0 ).count();
+
+        /************************************************************
          Detect people in the image
         ************************************************************/
-        const std::vector<Detection>    detections = detector.detect( f.image );
         if ( !detections.empty() )
             {
             ++stats.num_of_proc_frames_with_detection;
             }
         
         /************************************************************
-         Calculate latency, between when the image was captured to now
+         Calculate latency, between when the image was pushed onto 
+         the queue to after pop and detection (now)
+
+         NOTE: This time does NOT include time it takes light to hit
+         the sensor (negligable), the camera's own exposure (longer in 
+         dim conditions), internal processing, and USB transfer. 
+         Latency time is in reality larger and must be budgeted 
+         separately.
         ************************************************************/
         double milli_sec = 
         std::chrono::duration<double, std::milli>( std::chrono::steady_clock::now() - f.captured_at ).count();
@@ -188,7 +213,7 @@ int main()
                                         CONSTANTS
     *************************************************************************************/
     constexpr std::uint32_t     WARMUP_READ_FRAME_NUM =  10;
-    constexpr std::uint32_t     CAM_RUN_PERIOD_SEC    =  10;
+    constexpr std::uint32_t     CAM_RUN_PERIOD_SEC    =  10;    /* has to be different than zero */
     constexpr float             MIN_CONFIDENCE        =  0.3f;
 
     /*************************************************************************************
@@ -276,15 +301,17 @@ int main()
               << "Frames with Detection: "  << pstats.num_of_proc_frames_with_detection << "\n";
               if ( pstats.processed > 0 )
                   {
-                  std::cout << "Average Pipeline Latency [ms]: "      << pstats.latency_sum_ms / static_cast<double>( pstats.processed ) << "\n";
-                  std::cout << "Camera Frame Interval (1/FPS) [ms]: " << 1000.0 * ( 1 / ( static_cast<double>( cstats.captured ) / static_cast<double>( CAM_RUN_PERIOD_SEC ) ) ) << "\n";
+                  std::cout << "Average Pipeline Latency [ms]: " << pstats.latency_sum_ms        / static_cast<double>( pstats.processed ) << "\n"
+                            << "Average Detection Time [ms]: "   << pstats.detection_time_sum_ms / static_cast<double>( pstats.processed ) << "\n"
+                            << "Average Frame Age [ms]: "        << pstats.frame_age_sum_ms      / static_cast<double>( pstats.processed ) << "\n";
                   }
               else
                   {
                   std::cout << "Average Latency [ms]: n/a (no processed frames)\n";
                   }
-    std::cout << "Max Latency [ms]: "       << pstats.latency_max_ms << "\n"
-              << "Accounting " << ( cstats.captured == pstats.processed + cstats.dropped ? "OK" : "MISMATCH" ) << "\n"
+    std::cout << "Camera Frame Interval (1/FPS) [ms]: " << 1000.0 * ( 1 / ( static_cast<double>( cstats.captured ) / static_cast<double>( CAM_RUN_PERIOD_SEC ) ) ) << "\n"
+              << "Max Latency [ms]: "                   << pstats.latency_max_ms << "\n"
+              << "Accounting "                          << ( cstats.captured == pstats.processed + cstats.dropped ? "OK" : "MISMATCH" ) << "\n"
               << "---------------------------------\n";
 
     return( 0 );

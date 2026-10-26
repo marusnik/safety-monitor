@@ -18,7 +18,7 @@ system falls back to **STOP** whenever it is uncertain or its inputs go stale.
 |---|---|---|
 | 1 | Raspberry Pi setup, CMake, webcam capture in C++ | Done |
 | 2 | Two-thread capture pipeline with a thread-safe queue | Done (thread sanitizer pending, see Known issues) |
-| 3 | Pretrained person detector (OpenCV DNN) | In progress |
+| 3 | Pretrained person detector (OpenCV DNN) | Done (one open question, see Open questions) |
 | 4 | Distance sensor (VL53L1X over I2C), zone logic with hysteresis | Planned |
 | 5 | ML safety monitor: confidence intervals, plausibility checks, fail-safe STOP | Planned |
 | 6 | Cross-checking the camera against the distance sensor | Planned |
@@ -81,7 +81,7 @@ tests/
 ```
 [camera thread]                        [processing thread]
 read into a fresh Frame                pop_wait(frame, 500 ms)
-stamp captured_at + sequence    --->   process the frame
+stamp captured_at + sequence    --->   detect people (SSD MobileNet v2, OpenCV DNN)
 push (drop oldest if full)             on TIMEOUT: report "camera silent"
 ```
 
@@ -167,22 +167,83 @@ before starting the threads.
 At ~92 ms per frame, the detector can process at most ~10–11 FPS, slower than the camera's
 ~20 FPS. The detector is the bottleneck, which makes the depth-1 queue from finding 4 essential.
 
+### 6. Which component is the bottleneck depends on the lighting
+
+Full pipeline with the real detector, depth-1 queue, 10 s runs:
+
+| Light              | Captured FPS | Processed FPS | Dropped | Avg latency | Max latency | Bottleneck |
+|--------------------|--------------|---------------|---------|-------------|-------------|------------|
+| Dim                | 7.9          | 7.7           | 2       | 82 ms       | 160 ms      | Camera     |
+| Lamp on            | 20.0         | 10.5          | 95      | 92 ms       | 155 ms      | Detector   |
+| Bright (at a lamp) | 29.2         | 12.1          | 171     | 99 ms       | 162 ms      | Detector   |
+
+- **Dim:** frames arrive every ~127 ms but detection takes ~80 ms, so the detector waits for
+  each frame and takes it almost immediately. Almost nothing is dropped, and latency is close
+  to the detection time alone.
+- **Bright:** frames arrive faster than the detector can process them; the depth-1 queue drops
+  the extra frames so the detector always gets the newest one.
+
+The system's behavior depends on the environment, and the safety analysis must cover both
+regimes. In every run, `captured == processed + dropped` held exactly.
+
+### 7. Latency breakdown: frame age + detection time
+
+The report splits pipeline latency into the frame's age when the detector picks it up and the
+detection time itself:
+
+| Run         | Frame interval | Avg age at pop | Avg detection | Age + detection | Pipeline latency |
+|-------------|----------------|----------------|---------------|-----------------|------------------|
+| 14.0 FPS    | 71 ms          | 7.3 ms         | 80.2 ms       | 87.5 ms         | 87.6 ms          |
+| 29.2 FPS    | 34 ms          | 15.8 ms        | 82.7 ms       | 98.5 ms         | 98.6 ms          |
+
+- **The two parts add up to the measured latency** in both runs: the instrumentation accounts
+  for all of it, with no unmeasured delay in between.
+- **At 29.2 FPS the age matches the model:** the newest frame is between 0 and one interval
+  old, ~17 ms on average; measured 15.8 ms.
+- **At 14 FPS it does not:** expected ~35 ms, measured 7.3 ms. Still unexplained, see
+  Open questions.
+
+### 8. Detection results so far
+
+| Scene                                 | Frames with a person detected |
+|---------------------------------------|-------------------------------|
+| Person in view, dim light (run 1)     | 68 / 77                       |
+| Person in view, dim light (run 2)     | 77 / 77                       |
+| Person in view, lamp on               | 105 / 105                     |
+| Empty scene, camera pointed at a lamp | 0 / 121                       |
+
+- **Misses vary from run to run:** 9 missed frames (~12%) in one run, none in the next, at the
+  same threshold (0.3). A person does not vanish for one frame, so the safety monitor must not
+  release STOP on a single empty frame (planned for week 5).
+- **No false positives** in a very bright, nearly overexposed empty scene.
+- These are informal runs, not a validation set. Systematic missed-detection and
+  false-positive rates come in week 7.
+
 ## Models
 
-| Model                               | Source 
-|-------------------------------------|------------------------
-| SSD MobileNet v2 (COCO, 2018-03-29) | TensorFlow model zoo (`frozen_inference_graph.pb`) + OpenCV 
-                                        `opencv_extra` (`ssd_mobilenet_v2_coco_2018_03_29.pbtxt`) 
-
-| License    | Input         | Classes used |
-|------------|---------------|--------------|
-| Apache 2.0 | 300 × 300 RGB | 1 = person   |
+| Item         | Value                                                                             |
+|--------------|-----------------------------------------------------------------------------------|
+| Model        | SSD MobileNet v2 (COCO, 2018-03-29)                                               |
+| Weights      | `frozen_inference_graph.pb`, TensorFlow model zoo                                 |
+| Config       | `ssd_mobilenet_v2_coco_2018_03_29.pbtxt`, OpenCV `opencv_extra` (`testdata/dnn/`) |
+| License      | Apache 2.0                                                                        |
+| Input        | 300 × 300 RGB                                                                     |
+| Class used   | 1 = person                                                                        |
 
 Model files are not stored in this repository. Download them into `models/`.
 
 **Confidence threshold:** 0.3, provisional. For a safety monitor, a missed person is worse than
 a false stop, so the threshold starts low. The final value will be chosen from the week 7
 validation set against a stated missed-detection requirement, not by eye.
+
+## Open questions
+
+- **Frame age at 14 FPS (finding 7):** expected ~35 ms, measured 7.3 ms. Frames appeared to
+  arrive just as the detector became free. One hypothesis was that the detector, which uses all
+  four CPU cores, delays the camera thread so `captured_at` is stamped late (which would make
+  the measured latency optimistic). The 29.2 FPS run weakens it: the camera ran at full rate
+  while the detector was busy. Next experiment: `cv::setNumThreads(3)` in medium light, to see
+  whether leaving one core free changes the frame age.
 
 ## Known issues
 
