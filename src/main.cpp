@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <format>
 #include "frame.hpp"
 #include "thread_safe_queue.hpp"
 #include "person_detector.hpp"
@@ -36,6 +37,22 @@ struct ProcessStats { std::uint64_t processed                         = 0;     /
 /*************************************************************************************
                                     FUNCTIONS
 *************************************************************************************/
+
+void print_row( const std::string& label, double value, int decimals = 1 )
+    {
+    std::cout << std::format( "{:<38}{:>10.{}f}\n", label, value, decimals );
+    }
+
+
+
+
+void print_row( const std::string& label, std::uint64_t value )
+    {
+    std::cout << std::format( "{:<38}{:>10}\n", label, value );
+    }
+
+
+
 
 void camera_loop( cv::VideoCapture &         cap, 
                   FrameQueue &               queue,
@@ -238,6 +255,20 @@ int main()
         }
 
     /************************************************************
+     Make sure autofocus is off and set to propper distance 
+     (don't assume camera is set the way we need). Experiment 
+     showed the value of 11 is appropriate to focus at 1-2m where 
+     the detection is most important (LifeCam HD-5001).
+    ************************************************************/
+    constexpr double FOCUS_ABSOLUTE = 11.0;
+
+    if ( !cap.set( cv::CAP_PROP_AUTOFOCUS, 0 ) 
+      || !cap.set( cv::CAP_PROP_FOCUS, FOCUS_ABSOLUTE ) )
+        {
+        std::cerr << "Warning: could not set fixed focus\n";
+        }
+
+    /************************************************************
      Waste a few reads until camera stabilize
     ************************************************************/ 
     cv::Mat            frame;
@@ -291,28 +322,25 @@ int main()
     /************************************************************
      Print capture and processing statistics
     ************************************************************/    
-    std::cout << "---------------------------------\n"
-              << "Frames Per Second: "      << static_cast<double>( cstats.captured ) / static_cast<double>( CAM_RUN_PERIOD_SEC ) << "\n"
-              << "Processed FPS: "          << static_cast<double>( pstats.processed ) / static_cast<double>( CAM_RUN_PERIOD_SEC ) << "\n"
-              << "Dropped Frames: "         << cstats.dropped << "\n"
-              << "Failed to Capture: "      << cstats.failed << "\n"
-              << "Number of Timeouts: "     << pstats.timeouts << "\n"
-              << "Processed Frames: "       << pstats.processed << "\n"
-              << "Frames with Detection: "  << pstats.num_of_proc_frames_with_detection << "\n";
-              if ( pstats.processed > 0 )
-                  {
-                  std::cout << "Average Pipeline Latency [ms]: " << pstats.latency_sum_ms        / static_cast<double>( pstats.processed ) << "\n"
-                            << "Average Detection Time [ms]: "   << pstats.detection_time_sum_ms / static_cast<double>( pstats.processed ) << "\n"
-                            << "Average Frame Age [ms]: "        << pstats.frame_age_sum_ms      / static_cast<double>( pstats.processed ) << "\n";
-                  }
-              else
-                  {
-                  std::cout << "Average Latency [ms]: n/a (no processed frames)\n";
-                  }
-    std::cout << "Camera Frame Interval (1/FPS) [ms]: " << 1000.0 * ( 1 / ( static_cast<double>( cstats.captured ) / static_cast<double>( CAM_RUN_PERIOD_SEC ) ) ) << "\n"
-              << "Max Latency [ms]: "                   << pstats.latency_max_ms << "\n"
-              << "Accounting "                          << ( cstats.captured == pstats.processed + cstats.dropped ? "OK" : "MISMATCH" ) << "\n"
-              << "---------------------------------\n";
+    std::cout << "------------------------------------------------\n";
+    print_row( "Captured FPS",          static_cast<double>( cstats.captured )  / static_cast<double>( CAM_RUN_PERIOD_SEC ) );
+    print_row( "Processed FPS",         static_cast<double>( pstats.processed ) / static_cast<double>( CAM_RUN_PERIOD_SEC ) );
+    print_row( "Dropped frames",        cstats.dropped );
+    print_row( "Failed captures",       cstats.failed );
+    print_row( "Timeouts",              pstats.timeouts );
+    print_row( "Processed frames",      pstats.processed );
+    print_row( "Frames with detection", pstats.num_of_proc_frames_with_detection );
+    if ( pstats.processed > 0 )
+        {
+        print_row( "Average Pipeline Latency [ms]: ", pstats.latency_sum_ms        / static_cast<double>( pstats.processed ) );
+        print_row( "Average Detection Time [ms]: ",   pstats.detection_time_sum_ms / static_cast<double>( pstats.processed ) );
+        print_row( "Average Frame Age [ms]: ",        pstats.frame_age_sum_ms      / static_cast<double>( pstats.processed ) );
+        }
+    else
+        {
+        std::cout << "Average Latency [ms]: n/a (no processed frames)\n";
+        }
+    std::cout << "------------------------------------------------\n";
 
     return( 0 );
 

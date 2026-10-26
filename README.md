@@ -39,6 +39,64 @@ system falls back to **STOP** whenever it is uncertain or its inputs go stale.
 - C++20, g++ 14, CMake 3.31
 - OpenCV 4.10 (`libopencv-dev`)
 
+## Camera configuration
+
+The program configures the camera at startup, so the settings are part of the code rather than
+something to remember:
+
+| Setting   | Value              | Why                                                               |
+|-----------|--------------------|-------------------------------------------------------------------|
+| Device    | `/dev/video0`, V4L2 | LifeCam HD-5001                                                  |
+| Autofocus | Off                | Autofocus "hunts" when the scene changes, which is exactly when a person walks in; a fixed focus makes the camera behave the same way every run |
+| Focus     | 11 (`focus_absolute`) | Chosen by hand: subject sharpest at 1–2 m, the distance range that matters for SLOW and STOP |
+
+The settings are read back after being set and printed at startup, because some drivers report
+success without applying a setting. They can also be checked from outside while the program runs:
+
+```bash
+v4l2-ctl -d /dev/video0 --get-ctrl=focus_absolute,focus_automatic_continuous
+```
+
+**Not yet measured:** detection with autofocus on versus off. Planned as part of the week 7
+validation runs.
+
+### Decision: auto-exposure stays on
+
+| Option              | In dim light                                    | Risk                         |
+|---------------------|-------------------------------------------------|------------------------------|
+| Auto-exposure on    | Image stays bright; frame rate drops (27 → 7 FPS) | Slower reaction, motion blur |
+| Fixed exposure      | Frame rate stays constant; image gets dark      | **Missed people**            |
+
+**Auto-exposure stays on**, because a missed person is the worst failure this system can have
+(the same reasoning as the low confidence threshold). The cost is a slower camera in low light,
+so the reaction time must be budgeted for the worst case rather than the best one.
+
+**Worst-case reaction time in dim light (estimate):**
+
+| Delay                                                  | ~7.9 FPS (dim)   |
+|--------------------------------------------------------|------------------|
+| Waiting for the next frame (worst case: one interval)  | ~127 ms          |
+| Camera exposure and transfer (not measured, estimated) | ~50–100 ms       |
+| Detection                                              | ~80 ms           |
+| **Total**                                              | **~260–310 ms**  |
+
+Machine-safety standards use an approach speed of 1.6 m/s for a walking person (ISO 13855). At
+that speed a person covers **~0.4–0.5 m** before the monitor reacts, nearly the whole current
+STOP distance (500 mm). Consequences for the design:
+
+1. **Zone distances will be derived from the worst-case reaction time**, not chosen as round
+   numbers: `safety distance = approach speed × reaction time + margin`.
+2. **A frame rate below the minimum assumed in that calculation is a fault:** the monitor is
+   outside its design envelope and goes to a degraded state (SLOW or STOP).
+3. **Image brightness will also be monitored** (mean of the grayscale frame). Frames outside the
+   brightness range covered by validation are treated the same way.
+
+The minimum frame rate and the brightness limits will come from the week 7 measurements: the
+conditions in which detection still meets the missed-person requirement. Worth trying first:
+keep auto-exposure but disable the camera's frame-rate reduction (`exposure_dynamic_framerate=0`,
+if supported), which raises gain instead of lengthening exposure: noisier images, constant
+frame rate.
+
 ## Building
 
 ```bash
@@ -244,6 +302,9 @@ validation set against a stated missed-detection requirement, not by eye.
   the measured latency optimistic). The 29.2 FPS run weakens it: the camera ran at full rate
   while the detector was busy. Next experiment: `cv::setNumThreads(3)` in medium light, to see
   whether leaving one core free changes the frame age.
+- **Camera configuration failure:** if fixed focus cannot be set, the program currently prints a
+  warning and continues. Should a safety monitor refuse to start with the camera in an unknown
+  configuration? To be decided as a requirement in week 9.
 
 ## Known issues
 
