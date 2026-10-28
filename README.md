@@ -320,5 +320,5 @@ validation set against a stated missed-detection requirement, not by eye.
 
 ## License
 
-TODO: choose a license for this repository. Third-party model weights keep their own licenses
-(see the Models section, added in week 3).
+This project's code is released under the MIT License (see `LICENSE`). Third-party model weights
+are not included in this repository and keep their own licenses (see Models).
