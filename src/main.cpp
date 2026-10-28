@@ -274,12 +274,25 @@ int main()
      showed the value of 11 is appropriate to focus at 1-2m where 
      the detection is most important (LifeCam HD-5001).
     ************************************************************/
-    constexpr double FOCUS_ABSOLUTE = 11.0;
+    constexpr long FOCUS_ABSOLUTE = 11;
 
-    if ( !cap.set( cv::CAP_PROP_AUTOFOCUS, 0 ) 
-      || !cap.set( cv::CAP_PROP_FOCUS, FOCUS_ABSOLUTE ) )
+    if ( !cap.set( cv::CAP_PROP_AUTOFOCUS, 0.0 ) 
+      || !cap.set( cv::CAP_PROP_FOCUS, static_cast<double>( FOCUS_ABSOLUTE ) ) )
         {
         std::cerr << "Warning: could not set fixed focus\n";
+        }
+
+    /************************************************************
+     Get the set values back and make sure they are set.
+     It's safe to compare doubles with the chosen values here 
+     (since round), but they might change in the future so 
+     converting to integers first
+    ************************************************************/
+    if ( std::lround( cap.get( cv::CAP_PROP_AUTOFOCUS ) ) != 0
+      || std::lround( cap.get( cv::CAP_PROP_FOCUS     ) ) != FOCUS_ABSOLUTE )
+        {
+        std::cerr << "Warning: camera did not apply the requested focus settings\n";
+        return( 1 );
         }
 
     /************************************************************

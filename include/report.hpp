@@ -79,7 +79,7 @@ void print_row( const std::string& label,
 *       print_statistics
 *
 *   DESCRIPTION:
-*       Prints capture and processing statistics of interes
+*       Prints capture and processing statistics of interest
 *
 *****************************************************************************/
 
