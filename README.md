@@ -50,8 +50,16 @@ something to remember:
 | Autofocus | Off                | Autofocus "hunts" when the scene changes, which is exactly when a person walks in; a fixed focus makes the camera behave the same way every run |
 | Focus     | 11 (`focus_absolute`) | Chosen by hand: subject sharpest at 1–2 m, the distance range that matters for SLOW and STOP |
 
-The settings are read back after being set and printed at startup, because some drivers report
-success without applying a setting. They can also be checked from outside while the program runs:
+**The settings are verified, not trusted.** Some drivers report success without applying a
+setting, so after setting them the program reads both values back (as integers) and compares
+them with what it requested:
+
+- If setting a value reports failure, the program prints a warning and still checks the read-back.
+- **If the read-back does not match, the monitor refuses to start.** Validation results only apply
+  to the camera configuration they were measured with; a camera in an unknown configuration
+  would make them meaningless.
+
+The settings can also be checked from outside while the program runs:
 
 ```bash
 v4l2-ctl -d /dev/video0 --get-ctrl=focus_absolute,focus_automatic_continuous
@@ -302,9 +310,6 @@ validation set against a stated missed-detection requirement, not by eye.
   the measured latency optimistic). The 29.2 FPS run weakens it: the camera ran at full rate
   while the detector was busy. Next experiment: `cv::setNumThreads(3)` in medium light, to see
   whether leaving one core free changes the frame age.
-- **Camera configuration failure:** if fixed focus cannot be set, the program currently prints a
-  warning and continues. Should a safety monitor refuse to start with the camera in an unknown
-  configuration? To be decided as a requirement in week 9.
 
 ## Known issues
 

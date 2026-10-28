@@ -8,6 +8,8 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <cmath>
+
 #include "frame.hpp"
 #include "thread_safe_queue.hpp"
 #include "person_detector.hpp"
@@ -269,7 +271,7 @@ int main()
         }
 
     /************************************************************
-     Make sure autofocus is off and set to propper distance 
+     Make sure autofocus is off and set to proper distance 
      (don't assume camera is set the way we need). Experiment 
      showed the value of 11 is appropriate to focus at 1-2m where 
      the detection is most important (LifeCam HD-5001).
@@ -291,7 +293,7 @@ int main()
     if ( std::lround( cap.get( cv::CAP_PROP_AUTOFOCUS ) ) != 0
       || std::lround( cap.get( cv::CAP_PROP_FOCUS     ) ) != FOCUS_ABSOLUTE )
         {
-        std::cerr << "Warning: camera did not apply the requested focus settings\n";
+        std::cerr << "Error: camera did not apply the requested focus settings\n";
         return( 1 );
         }
 
