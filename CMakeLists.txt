@@ -9,7 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)           # fail if the compiler can't do C+
 find_package(OpenCV REQUIRED)                                   # after project(...)
 find_package(Threads REQUIRED)
 
-add_executable(safety_monitor src/main.cpp src/person_detector.cpp)
+add_executable(safety_monitor src/main.cpp src/person_detector.cpp src/report.cpp)
 target_include_directories(safety_monitor PRIVATE include)
 target_link_libraries(safety_monitor PRIVATE ${OpenCV_LIBS})    # after add_executable(...)
 target_compile_options(safety_monitor PRIVATE -Wall -Wextra -Wconversion)   # strict warnings

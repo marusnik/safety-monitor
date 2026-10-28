@@ -21,9 +21,9 @@ template <typename T, std::size_t Capacity>
 class ThreadSafeQueue {
 
     public:
-        PushResult                 push(T value);                                 // camera thread
-        PopResult                  pop_wait(T& out, 
-                                            std::chrono::milliseconds timeout);   // processing thread: waits for data
+        PushResult                 push( T value );                                // camera thread
+        PopResult                  pop_wait( T&                        out, 
+                                             std::chrono::milliseconds timeout ); // processing thread: waits for data
         void                       close();                                       // shutdown: wake up anyone waiting
 
     private:
@@ -37,6 +37,16 @@ class ThreadSafeQueue {
 /*************************************************************************************
                                    FUNCTIONS
 *************************************************************************************/
+
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       push
+*
+*   DESCRIPTION:
+*       Thread safe push function
+*
+*****************************************************************************/
 
 template <typename T, std::size_t Capacity>
 PushResult ThreadSafeQueue<T, Capacity>::push( T value )
@@ -56,7 +66,15 @@ PushResult ThreadSafeQueue<T, Capacity>::push( T value )
     }  /* push() */
 
 
-
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       close
+*
+*   DESCRIPTION:
+*       Thread safe close function
+*
+*****************************************************************************/
 
 template <typename T, std::size_t Capacity>
 void ThreadSafeQueue<T, Capacity>::close()
@@ -71,10 +89,18 @@ void ThreadSafeQueue<T, Capacity>::close()
     } /* close() */
 
 
-
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       close
+*
+*   DESCRIPTION:
+*       Thread safe pop function
+*
+*****************************************************************************/
 
 template <typename T, std::size_t Capacity>
-PopResult ThreadSafeQueue<T, Capacity>::pop_wait( T& out, 
+PopResult ThreadSafeQueue<T, Capacity>::pop_wait( T&                        out, 
                                                   std::chrono::milliseconds timeout )
     {
 
@@ -82,12 +108,20 @@ PopResult ThreadSafeQueue<T, Capacity>::pop_wait( T& out,
 
     not_empty_.wait_for( lock, timeout, [ this ] { return !buffer_.empty() || closed_; } );
 
-    if ( buffer_.pop( out ) )          // no captured frame is silently lost at shutdown; pop even if closed_ is true
+    /************************************************************
+     Pop even if closed_ is true. No captured frame is silently 
+     lost at shutdown (for Capacity of one)
+    ************************************************************/
+    if ( buffer_.pop( out ) )
         {
         return( PopResult::POPPED );
         }
 
-    if ( closed_ )                    // only when close when frames are not in the queue any more
+    /************************************************************
+     Return closed only when frames are not in the queue any more
+     (for Capacity of one)
+    ************************************************************/
+    if ( closed_ )
         {
         return( PopResult::CLOSED );
         }

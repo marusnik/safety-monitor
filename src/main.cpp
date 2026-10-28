@@ -8,51 +8,36 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
-#include <format>
 #include "frame.hpp"
 #include "thread_safe_queue.hpp"
 #include "person_detector.hpp"
+#include "report.hpp"
 
 
 /*************************************************************************************
                                       CLASSES
 *************************************************************************************/
+/************************************************************
+ In normal light detector is slower than camera. Choosing 
+ Capacity = 1 means less latency since frames get dropped
+************************************************************/
 using FrameQueue = ThreadSafeQueue< Frame, 1 >;
-
-struct CaptureStats { std::uint64_t captured = 0;           // written ONLY by the camera thread
-                      std::uint64_t failed   = 0;
-                      std::uint64_t dropped  = 0;
-    };
-
-struct ProcessStats { std::uint64_t processed                         = 0;     // written ONLY by the processing thread
-                      std::uint64_t timeouts                          = 0;
-                      std::uint64_t num_of_proc_frames_with_detection = 0;
-                      double        latency_sum_ms                    = 0.0;
-                      double        latency_max_ms                    = 0.0;
-                      double        detection_time_sum_ms             = 0.0;
-                      double        frame_age_sum_ms                  = 0.0;
-    };
 
 
 /*************************************************************************************
                                     FUNCTIONS
 *************************************************************************************/
 
-void print_row( const std::string& label, double value, int decimals = 1 )
-    {
-    std::cout << std::format( "{:<38}{:>10.{}f}\n", label, value, decimals );
-    }
-
-
-
-
-void print_row( const std::string& label, std::uint64_t value )
-    {
-    std::cout << std::format( "{:<38}{:>10}\n", label, value );
-    }
-
-
-
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       camera_loop
+*
+*   DESCRIPTION:
+*       Camera thread: captures timestamped frames into the queue until
+*       stopped, then closes the queue.
+*
+*****************************************************************************/
 
 void camera_loop( cv::VideoCapture &         cap, 
                   FrameQueue &               queue,
@@ -103,7 +88,16 @@ void camera_loop( cv::VideoCapture &         cap,
     } /* camera_loop() */
 
 
-
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       processing_loop
+*
+*   DESCRIPTION:
+*       Processing thread: runs person detection on the newest frame and
+*       records timing statistics; a timeout means the camera went silent.
+*
+*****************************************************************************/
 
 void processing_loop( FrameQueue&     queue, 
                       ProcessStats&   stats,
@@ -200,7 +194,16 @@ void processing_loop( FrameQueue&     queue,
     } /* processing_loop() */
 
 
-
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       make_detector
+*
+*   DESCRIPTION:
+*       Creates the person detector; returns std::nullopt if the model
+*       cannot be loaded.
+*
+*****************************************************************************/
 
 std::optional<PersonDetector> make_detector( float min_confidence )
     {
@@ -222,7 +225,16 @@ std::optional<PersonDetector> make_detector( float min_confidence )
     } /* make_detector */
 
 
-
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       main
+*
+*   DESCRIPTION:
+*       Sets up the camera and detector, runs both threads for a fixed
+*       period, and prints statistics.
+*
+*****************************************************************************/
 
 int main()
     {
@@ -232,6 +244,8 @@ int main()
     constexpr std::uint32_t     WARMUP_READ_FRAME_NUM =  10;
     constexpr std::uint32_t     CAM_RUN_PERIOD_SEC    =  10;    /* has to be different than zero */
     constexpr float             MIN_CONFIDENCE        =  0.3f;
+
+    static_assert( CAM_RUN_PERIOD_SEC > 0, "Run period must be positive" );
 
     /*************************************************************************************
                                         VARIABLES
@@ -310,7 +324,7 @@ int main()
     std::thread camera( [ & ] { camera_loop( cap, queue, running, cstats ); } );
     std::thread worker( [ & ] { processing_loop( queue, pstats, *detector ); } );
 
-    /************************************************************
+    /************************************************************ 
      Run for a while and then ask the camera thread to stop
     ************************************************************/
     std::this_thread::sleep_for( std::chrono::seconds( CAM_RUN_PERIOD_SEC ) );
@@ -321,26 +335,10 @@ int main()
 
     /************************************************************
      Print capture and processing statistics
-    ************************************************************/    
-    std::cout << "------------------------------------------------\n";
-    print_row( "Captured FPS",          static_cast<double>( cstats.captured )  / static_cast<double>( CAM_RUN_PERIOD_SEC ) );
-    print_row( "Processed FPS",         static_cast<double>( pstats.processed ) / static_cast<double>( CAM_RUN_PERIOD_SEC ) );
-    print_row( "Dropped frames",        cstats.dropped );
-    print_row( "Failed captures",       cstats.failed );
-    print_row( "Timeouts",              pstats.timeouts );
-    print_row( "Processed frames",      pstats.processed );
-    print_row( "Frames with detection", pstats.num_of_proc_frames_with_detection );
-    if ( pstats.processed > 0 )
-        {
-        print_row( "Average Pipeline Latency [ms]: ", pstats.latency_sum_ms        / static_cast<double>( pstats.processed ) );
-        print_row( "Average Detection Time [ms]: ",   pstats.detection_time_sum_ms / static_cast<double>( pstats.processed ) );
-        print_row( "Average Frame Age [ms]: ",        pstats.frame_age_sum_ms      / static_cast<double>( pstats.processed ) );
-        }
-    else
-        {
-        std::cout << "Average Latency [ms]: n/a (no processed frames)\n";
-        }
-    std::cout << "------------------------------------------------\n";
+    ************************************************************/
+    print_statistics( cstats, 
+                      pstats, 
+                      CAM_RUN_PERIOD_SEC );
 
     return( 0 );
 

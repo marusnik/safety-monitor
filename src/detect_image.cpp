@@ -12,6 +12,18 @@
                                       FUNCTIONS
 *************************************************************************************/
 
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       main
+*
+*   DESCRIPTION:
+*       Read an image from the camera and detect how many people are in the
+*       image and draw rectangle around them. Save the resulting immage in
+*       result.jpg
+*
+*****************************************************************************/
+
 int main( int argc, char* argv[] )
     {
     if ( argc < 2 )

@@ -11,6 +11,17 @@
                                     FUNCTIONS
 *************************************************************************************/
 
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       PersonDetector
+*
+*   DESCRIPTION:
+*       Create PersonDetector object and throw an error if not able to read
+*       network model
+*
+*****************************************************************************/
+
 PersonDetector::PersonDetector( const std::string&    model_path,
                                 const std::string&    config_path,
                                 float                 min_confidence )
@@ -24,6 +35,16 @@ PersonDetector::PersonDetector( const std::string&    model_path,
 
     } /* PersonDetector::PersonDetector() */
 
+
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       detect
+*
+*   DESCRIPTION:
+*       Return detection object (box and confidence) for provided image
+*
+*****************************************************************************/
 
 std::vector<Detection> PersonDetector::detect( const cv::Mat& image )
     {
@@ -71,7 +92,8 @@ std::vector<Detection> PersonDetector::detect( const cv::Mat& image )
         const int      class_id   = static_cast<int>( rows.at<float>( idx, 1 ) );
         const float    confidence = rows.at<float>( idx, 2 );
 
-        if ( class_id != PERSON_CLASS_ID || confidence < min_confidence_ )
+        if ( class_id != PERSON_CLASS_ID 
+          || confidence < min_confidence_ )
             {
             continue;
             }

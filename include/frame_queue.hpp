@@ -44,6 +44,18 @@ class RingBuffer {
                                     FUNCTIONS
 *************************************************************************************/
 
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       push
+*
+*   DESCRIPTION:
+*       Push onto the buffer. Start dropping the oldest value if not enough
+*       space
+*
+*****************************************************************************/
+
+
 template <typename T, std::size_t Capacity>
 PushResult RingBuffer<T, Capacity>::push(T value)
     {
@@ -65,6 +77,15 @@ PushResult RingBuffer<T, Capacity>::push(T value)
     }  /* push() */
 
 
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       pop
+*
+*   DESCRIPTION:
+*       Pop the oldest kept value from the buffer, if there is anything to pop
+*
+*****************************************************************************/
 
 template <typename T, std::size_t Capacity>
 bool RingBuffer<T, Capacity>::pop(T& out)
@@ -85,6 +106,15 @@ bool RingBuffer<T, Capacity>::pop(T& out)
     }  /* pop() */    
 
 
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       empty
+*
+*   DESCRIPTION:
+*       Is buffer empty?
+*
+*****************************************************************************/
 
 template <typename T, std::size_t Capacity>
 bool RingBuffer<T, Capacity>::empty() const
@@ -102,6 +132,15 @@ bool RingBuffer<T, Capacity>::empty() const
     }  /* empty() */    
 
 
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       full
+*
+*   DESCRIPTION:
+*       Is buffer full?
+*
+*****************************************************************************/
 
 template <typename T, std::size_t Capacity>
 bool RingBuffer<T, Capacity>::full() const
@@ -126,4 +165,4 @@ std::size_t RingBuffer<T, Capacity>::size() const
 
     return( size_in_buff );
 
-    }  /* size() */
+    }  /* full() */
