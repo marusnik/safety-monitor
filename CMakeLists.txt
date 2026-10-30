@@ -11,8 +11,8 @@ find_package(Threads REQUIRED)
 
 add_executable(safety_monitor src/main.cpp src/person_detector.cpp src/report.cpp)
 target_include_directories(safety_monitor PRIVATE include)
-target_link_libraries(safety_monitor PRIVATE ${OpenCV_LIBS})    # after add_executable(...)
-target_compile_options(safety_monitor PRIVATE -Wall -Wextra -Wconversion)   # strict warnings
+target_link_libraries(safety_monitor PRIVATE ${OpenCV_LIBS})
+target_compile_options(safety_monitor PRIVATE -Wall -Wextra -Wconversion)
 
 add_executable(test_frame_queue tests/test_frame_queue.cpp)
 target_include_directories(test_frame_queue PRIVATE include)
@@ -27,3 +27,7 @@ add_executable(detect_image src/detect_image.cpp src/person_detector.cpp)
 target_include_directories(detect_image PRIVATE include ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(detect_image PRIVATE ${OpenCV_LIBS})
 target_compile_options(detect_image PRIVATE -Wall -Wextra -Wconversion)
+
+add_executable(sensor_check src/sensor_check.cpp src/i2c_device.cpp)
+target_include_directories(sensor_check PRIVATE include)
+target_compile_options(sensor_check PRIVATE -Wall -Wextra -Wconversion)

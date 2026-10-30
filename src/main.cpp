@@ -211,7 +211,7 @@ std::optional<PersonDetector> make_detector( float min_confidence )
     {
     try
         {
-         /************************************************************
+        /************************************************************
          Consturct a detector object with specified minimum confidence
         ************************************************************/
         return PersonDetector( "models/frozen_inference_graph.pb",
