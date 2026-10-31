@@ -7,6 +7,9 @@
 #include <linux/i2c-dev.h>
 #include <stdexcept>
 #include <format>
+#include <linux/i2c.h>
+#include <limits>
+
 #include "i2c_device.hpp"
 
 
@@ -26,7 +29,7 @@
 *****************************************************************************/
 
 I2cDevice::I2cDevice( const std::string& bus, 
-                      std::uint8_t       address )
+                      std::uint8_t       address ) : address_( address )
     {
     /************************************************************
      Open bus for read/write. Throw an error if not successful
@@ -88,29 +91,48 @@ bool I2cDevice::read_register( std::uint16_t  reg,
                                std::size_t    length )
     {
     /************************************************************
-     The time of flight sensor (VL53L1X) uses 16-bit register 
-     addresses, send high byte first
+     Check for validity of inputs
+     len member of struct i2c_msg is uint16_t
     ************************************************************/
-    const std::uint8_t reg_bytes[2] = { static_cast<std::uint8_t>( reg >> 8 ),
-                                        static_cast<std::uint8_t>( reg & 0xFF ) };
-
-    /************************************************************
-     Tell the device which register to read from
-    ************************************************************/
-    const ssize_t written = write( fd_, reg_bytes, sizeof( reg_bytes ) );
-
-    if ( written != static_cast<ssize_t>( sizeof( reg_bytes ) ) )
+    if ( buffer == nullptr
+      || length == 0
+      || length > std::numeric_limits<std::uint16_t>::max() )
         {
         return( false );
         }
 
     /************************************************************
-     Read 'length' bytes starting at that register
+     The time of flight sensor (VL53L1X) uses 16-bit register 
+     addresses, send high byte first
     ************************************************************/
-    const ssize_t received = read( fd_, buffer, length );
+    std::uint8_t reg_bytes[ 2 ] = { static_cast<std::uint8_t>( reg >> 8 ),
+                                    static_cast<std::uint8_t>( reg & 0xFF ) };
 
-    if ( received < 0 
-      || static_cast<std::size_t>( received ) != length )
+    /************************************************************
+     Message 0 writes the register address, message 1 reads the
+     data back; the kernel sends both as one transaction
+    ************************************************************/
+    i2c_msg messages[ 2 ] = {};
+
+    messages[ 0 ].addr  = address_;
+    messages[ 0 ].flags = 0;                          // write
+    messages[ 0 ].len   = sizeof( reg_bytes );
+    messages[ 0 ].buf   = reg_bytes;
+
+    messages[ 1 ].addr  = address_;
+    messages[ 1 ].flags = I2C_M_RD;                   // read
+    messages[ 1 ].len   = static_cast<std::uint16_t>( length );
+    messages[ 1 ].buf   = buffer;
+
+    /************************************************************
+     Hand both messages to the kernel in a single ioctl
+    ************************************************************/
+    i2c_rdwr_ioctl_data transfer = {};
+
+    transfer.msgs  = messages;
+    transfer.nmsgs = 2;
+
+    if ( ioctl( fd_, I2C_RDWR, &transfer ) != 2 )
         {
         return( false );
         }

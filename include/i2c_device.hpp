@@ -25,5 +25,6 @@ class I2cDevice
                             std::size_t    length );
 
     private:
-        int fd_ = -1;                                                 // the file descriptor
+        int          fd_     = -1;                                    // the file descriptor
+        std::uint8_t address_ = 0;                                    // sensor address on i2c bus (0X29)
     };
