@@ -29,16 +29,13 @@ int main()
 
     try
         {
-        constexpr std::uint8_t  SENSOR_ADDR          = 0x29;
         constexpr std::uint16_t SENSOR_MODEL_ID_REG  = 0x010F;
-        constexpr std::uint8_t  EXPECTED_MODEL_ID    = 0xEA;
-        constexpr std::uint8_t  EXPECTED_MODULE_TYPE = 0xCC;
 
         /************************************************************
          Create sensor device; 0x29 is sensor's (VL53L1X) default 
          address, and I2C bus is exposed in /dev/i2c-1 file
         ************************************************************/
-        I2cDevice sensor( "/dev/i2c-1", SENSOR_ADDR );
+        I2cDevice sensor( "/dev/i2c-1", ToF_SENSOR_ADDR );
 
         /************************************************************
          Read sensor's identity register (0x010F)

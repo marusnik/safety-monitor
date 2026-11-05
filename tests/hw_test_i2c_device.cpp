@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <exception>
 
-#include "VL53L1X_api.h"
+#include "vl53l1x_api.hpp"
 #include "i2c_device.hpp"
 
 

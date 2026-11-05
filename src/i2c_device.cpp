@@ -46,6 +46,10 @@ I2cDevice::I2cDevice( const std::string& bus,
     ************************************************************/
     if( ioctl( fd_, I2C_SLAVE, address ) == -1 )
         {
+        /************************************************************
+         Close the file, since it's open at this point; Destructor 
+         won't do it when throw happens
+        ************************************************************/
         close( fd_ );
         throw std::runtime_error( std::format( "Could not select I2C device at address 0x{:02X} on bus {}", address, bus ) );
         }
@@ -105,8 +109,8 @@ bool I2cDevice::read_register( std::uint16_t  reg,
      The time of flight sensor (VL53L1X) uses 16-bit register 
      addresses, send high byte first
     ************************************************************/
-    std::uint8_t reg_bytes[ 2 ] = { static_cast<std::uint8_t>( reg >> 8 ),
-                                    static_cast<std::uint8_t>( reg & 0xFF ) };
+    std::uint8_t reg_bytes[ REG_HIGH_LOW_BYTES ] = { static_cast<std::uint8_t>( reg >> 8 ),
+                                                     static_cast<std::uint8_t>( reg & 0xFF ) };
 
     /************************************************************
      Message 0 writes the register address, message 1 reads the
@@ -140,3 +144,81 @@ bool I2cDevice::read_register( std::uint16_t  reg,
     return( true );
 
     } /* read_register() */
+
+
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       write_register
+*
+*   DESCRIPTION:
+*       Writes ‘length’ bytes starting at 16-bit register ‘reg’ 
+*       Returns false on invalid input or a failed transfer, otherwise true.
+*
+*****************************************************************************/
+
+bool I2cDevice::write_register( std::uint16_t       reg, 
+                                const std::uint8_t* data, 
+                                std::size_t         length )
+    {
+    /************************************************************
+     Check for validity of inputs
+    ************************************************************/
+    if ( data == nullptr
+      || length == 0
+      || length > REGISTER_SIZE )
+        {
+        return( false );
+        }
+
+    /************************************************************
+     Pack 16 bit register into the 8 bit tx array and append data
+    ************************************************************/
+    std::array<std::uint8_t, REG_HIGH_LOW_BYTES + REGISTER_SIZE> tx = 
+        { static_cast<std::uint8_t>( reg >> 8 ),
+          static_cast<std::uint8_t>( reg & 0xFF ) };
+
+    std::copy( data, data + length, tx.begin() + REG_HIGH_LOW_BYTES );
+
+    /************************************************************
+     Pack the message
+    ************************************************************/
+    i2c_msg message = {};
+
+    message.addr  = address_;
+    message.flags = 0;
+    message.len   = static_cast<std::uint16_t>( REG_HIGH_LOW_BYTES + length );
+    message.buf   = tx.data();
+
+    /************************************************************
+     Hand the message to the kernel in a single ioctl
+    ************************************************************/
+    i2c_rdwr_ioctl_data transfer = {};
+
+    transfer.msgs  = &message;
+    transfer.nmsgs = 1;
+
+    if ( ioctl( fd_, I2C_RDWR, &transfer ) != 1 )
+        {
+        return( false );
+        }
+
+    return( true );
+
+    } /* write_register */
+
+
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       address()
+*
+*   DESCRIPTION:
+*       Return sensor address on i2c bus (0X29)
+*
+*****************************************************************************/
+
+uint8_t I2cDevice::address()
+    {
+    return( address_ );
+    } /* address() */
