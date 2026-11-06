@@ -285,6 +285,17 @@ detection time itself:
 - These are informal runs, not a validation set. Systematic missed-detection and
   false-positive rates come in week 7.
 
+### 9. VL53L1X ranging accuracy (one room, one run per case, tape reference)
+- "Valid" does not mean accurate: with a table in the sensor's field of view,
+  status 0 readings were about 41 mm short at 300 mm. Raising the sensor halved the error.
+- Fixed targets up to 1600 mm (wall and dark blue shirt): individual readings were
+  -23 to +11 mm from the tape. No single offset fits, so the design uses a margin
+  (provisional +/-30 mm) rather than calibration.
+- A black shirt was valid at every distance tested (500-1600 mm).
+- A wall was valid out to 4000 mm. At 5000 mm, all readings were status 2 (signal failed).
+- Invalid readings map to STOP, so the monitor holds STOP if nothing is within range.
+- Not yet tested: direct sunlight, angled targets, other materials, repeatability across days.
+
 ## Models
 
 | Item         | Value                                                                             |

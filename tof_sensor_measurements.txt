@@ -1,0 +1,19 @@
+Case	                            |   Tape (mm)   	Valid	Min	   Max	 Avg	  Other statuses
+------------------------------------------------------------------------------------------------------------
+Wall,      about 300 mm		        |   300		        20/20   278	   281   279.7    n/a
+Wall,      about 500 mm				|   500             20/20   479    482   480.4    n/a
+Shirt,     about 500 mm				|	500             20/20   475    481   478.3    n/a 
+Wall,      about 600 mm				|	600             20/20   577    581   579.1    n/a
+Wall,      about 1000 mm			|	1000            20/20   998	  1005  1001.5    n/a
+Shirt,     about 1000 mm			|   1000            20/20  1011   1022  1014.6    n/a
+Shirt box, about 1000 mm			|   1000            20/20   984    989   986.2    n/a
+Wall,      about 1500 mm			|	1500            20/20  1498   1505  1501.8    n/a 
+Shirt,     about 1500 mm			|	1500            20/20  1514   1529  1520.6    n/a 
+Shirt box, about 1500 mm			|	1500            20/20  1504   1511  1508.2    n/a 
+Wall,      about 1600 mm			|	1600            20/20  1602   1609  1604.3    n/a
+Shirt box, about 1600 mm			|	1600            20/20  1593   1599  1596.7    n/a 
+Wall,      about 2000 mm			|	2000            20/20  1985   1992  1988.8    n/a 
+Wall,      about 3000 mm			|	3000            20/20  2949   2957  2953.2    n/a 
+Wall,      about 4000 mm			|	4000            20/20  3916   3923  3918.9    n/a  
+Covered	n/a				            |      0            20/20     0      0     0.0    n/a	
+Far away or open space	n/a		    |   5000	         0/20   n/a    n/a     n/a    status 2: 20 readings	
