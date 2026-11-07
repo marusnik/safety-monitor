@@ -14,9 +14,14 @@ find_package(Threads REQUIRED)
 #--------------------------------------------
 add_executable(safety_monitor src/main.cpp 
                               src/person_detector.cpp 
-                              src/report.cpp)
-target_include_directories(safety_monitor PRIVATE include third_party/vl53l1x_uld)
-target_link_libraries(safety_monitor PRIVATE ${OpenCV_LIBS})
+                              src/report.cpp
+                              src/vl53l1x_sensor.cpp
+                              src/zone_monitor.cpp 
+                              src/vl53l1_platform.cpp
+                              src/i2c_device.cpp)
+target_include_directories(safety_monitor PRIVATE include)
+target_link_libraries(safety_monitor PRIVATE ${OpenCV_LIBS}
+                                               vl53l1x_uld)
 target_compile_options(safety_monitor PRIVATE -Wall -Wextra -Wconversion)
 
 #--------------------------------------------
@@ -33,6 +38,14 @@ add_executable(test_thread_safe_queue tests/test_thread_safe_queue.cpp)
 target_include_directories(test_thread_safe_queue PRIVATE include)
 target_link_libraries(test_thread_safe_queue PRIVATE Threads::Threads)
 target_compile_options(test_thread_safe_queue PRIVATE -Wall -Wextra -Wconversion)
+
+#--------------------------------------------
+# test_zone_monitor
+#--------------------------------------------
+add_executable(test_zone_monitor tests/test_zone_monitor.cpp 
+                                 src/zone_monitor.cpp)
+target_include_directories(test_zone_monitor PRIVATE include)
+target_compile_options(test_zone_monitor PRIVATE -Wall -Wextra -Wconversion)
 
 #--------------------------------------------
 # hw_test_i2c_device
@@ -70,6 +83,7 @@ target_include_directories(vl53l1x_uld PUBLIC third_party/vl53l1x_uld)
 # range_check
 #--------------------------------------------
 add_executable(range_check src/range_check.cpp 
+                           src/vl53l1x_sensor.cpp
                            src/vl53l1_platform.cpp 
                            src/i2c_device.cpp)
 target_include_directories(range_check PRIVATE include)
