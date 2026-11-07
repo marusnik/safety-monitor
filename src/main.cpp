@@ -14,6 +14,9 @@
 #include "thread_safe_queue.hpp"
 #include "person_detector.hpp"
 #include "report.hpp"
+#include "vl53l1x_sensor.hpp"
+#include "zone_monitor.hpp"
+#include "zone_sample.hpp"
 
 
 /*************************************************************************************
@@ -199,6 +202,84 @@ void processing_loop( FrameQueue&     queue,
 /*****************************************************************************
 *
 *   PROCEDURE NAME:
+*       sensor_loop()
+*
+*   DESCRIPTION:
+*       Sensor thread: the only owner of the ToF driver. Turns each reading
+*       into a zone and publishes it with a timestamp, so that readers can
+*       detect a hung or dead thread. Any failure publishes STOP.
+*
+*****************************************************************************/
+
+void sensor_loop( Vl53l1xSensor&               sensor,
+                  std::atomic<ZoneSample>&     latest,
+                  const std::atomic<bool>&     running )
+    {
+    /************************************************************
+     Short pause after a failed read, so that a dead bus can't
+     spin this thread at 100% CPU
+    ************************************************************/
+    constexpr auto  RETRY_DELAY = std::chrono::milliseconds( 10 );
+
+    ZoneMonitor     monitor;    // starts in STOP
+
+    try
+        {
+        while ( running )
+            {
+            /************************************************************
+             read() blocks until data is ready (up to 
+             ~NUM_OF_POLL_ATTEMPTS ms), so it sets the loop rate; 
+             no sleep needed on success
+            ************************************************************/
+            const std::optional<RangeReading> reading = sensor.read();
+
+            /************************************************************
+             Only a status-0 reading gives a distance; anything else
+             goes to the monitor as nullopt, which means STOP
+            ************************************************************/
+            std::optional<std::uint16_t> distance_mm;
+
+            if ( reading
+              && reading->valid() )
+                {
+                distance_mm = reading->distance_mm;
+                }
+
+            /************************************************************
+             Publish even on failure, because "sensor not working, so
+             STOP" is fresh information too
+            ************************************************************/
+            const Zone zone = monitor.update( distance_mm );
+            latest.store( ZoneSample{ zone, now_ms() } );
+
+            if ( !reading )
+                {
+                std::this_thread::sleep_for( RETRY_DELAY );
+                }
+            }
+        }
+    catch ( const std::exception& e )
+        {
+        /************************************************************
+         Uncaught exception in a std::thread calls std::terminate.
+         Publish STOP and exit; staleness keeps readers in STOP
+        ************************************************************/
+        latest.store( ZoneSample{ Zone::STOP, now_ms() } );
+        std::cerr << "Sensor thread failed: " << e.what() << '\n';
+        }
+    catch ( ... )
+        {
+        latest.store( ZoneSample{ Zone::STOP, now_ms() } );
+        std::cerr << "Sensor thread failed: unknown exception\n";
+        }
+
+    } /* sensor_loop() */
+    
+
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
 *       make_detector
 *
 *   DESCRIPTION:
@@ -230,11 +311,35 @@ std::optional<PersonDetector> make_detector( float min_confidence )
 /*****************************************************************************
 *
 *   PROCEDURE NAME:
+*       zone_name()
+*
+*   DESCRIPTION:
+*       Returns a printable name for a zone
+*
+*****************************************************************************/
+
+const char* zone_name( Zone zone )
+    {
+    switch ( zone )
+        {
+        case Zone::CLEAR: return "CLEAR";
+        case Zone::SLOW:  return "SLOW";
+        case Zone::STOP:  return "STOP";
+        }
+
+    return "UNKNOWN";   // unreachable, but makes -Wall/-Wextra happy
+
+    } /* zone_name() */
+
+
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
 *       main
 *
 *   DESCRIPTION:
-*       Sets up the camera and detector, runs both threads for a fixed
-*       period, and prints statistics.
+*       Runs camera, detector and sensor threads for a fixed
+*       period and prints statistics.
 *
 *****************************************************************************/
 
@@ -244,7 +349,7 @@ int main()
                                         CONSTANTS
     *************************************************************************************/
     constexpr std::uint32_t     WARMUP_READ_FRAME_NUM =  10;
-    constexpr std::uint32_t     CAM_RUN_PERIOD_SEC    =  10;    /* has to be different than zero */
+    constexpr std::uint32_t     CAM_RUN_PERIOD_SEC    =  60;    /* has to be different than zero */
     constexpr float             MIN_CONFIDENCE        =  0.3f;
 
     static_assert( CAM_RUN_PERIOD_SEC > 0, "Run period must be positive" );
@@ -252,10 +357,13 @@ int main()
     /*************************************************************************************
                                         VARIABLES
     *************************************************************************************/
-    std::atomic<bool> running{ true };
-    FrameQueue        queue;
-    CaptureStats      cstats;
-    ProcessStats      pstats;
+    std::atomic<bool>       running{ true };
+    FrameQueue              queue;
+    CaptureStats            cstats;
+    ProcessStats            pstats;
+    ZoneSample              initial;
+    std::atomic<ZoneSample> latest_zone;
+    
 
     /************************************************************
      Open video capture; if not successfully, throw an error
@@ -318,6 +426,22 @@ int main()
         }
 
     /************************************************************
+     Create the sensor before any thread starts, so that a
+     startup failure exits cleanly instead of calling
+     std::terminate on joinable threads
+    ************************************************************/
+    std::optional<Vl53l1xSensor> sensor;
+    try
+        {
+        sensor.emplace( "/dev/i2c-1", ToF_SENSOR_ADDR );
+        }
+    catch ( const std::exception& e )
+        {
+        std::cerr << "Sensor setup failed: " << e.what() << '\n';
+        return( 1 );
+        }
+
+    /************************************************************
      Run one warm-up detection on a frame before starting the 
      processing thread. The first detection takes longer, and 
      we don't want it to throw off latency statistics
@@ -331,7 +455,6 @@ int main()
         std::cerr << "No frame from camera during warm-up\n";
         return( 1 );
         }
-    
 
     /************************************************************
      Spin up the capture and processing threads
@@ -339,14 +462,52 @@ int main()
     std::thread camera( [ & ] { camera_loop( cap, queue, running, cstats ); } );
     std::thread worker( [ & ] { processing_loop( queue, pstats, *detector ); } );
 
-    /************************************************************ 
-     Run for a while and then ask the camera thread to stop
+    /************************************************************
+     Start with a stale initial zone
     ************************************************************/
-    std::this_thread::sleep_for( std::chrono::seconds( CAM_RUN_PERIOD_SEC ) );
+    initial.zone    = Zone::STOP;
+    initial.time_ms = now_ms() - STALE_ZONE_LIMIT_MS - 1;
+
+    latest_zone.store( initial );
+
+    /************************************************************
+     Spin up the sensor thread
+    ************************************************************/
+    std::thread sensor_thread( [ & ] { sensor_loop( *sensor, 
+                                                     latest_zone,
+                                                     running ); } );
+
+    /************************************************************
+     Run for CAM_RUN_PERIOD_SEC, checking the zone every 100 ms.
+     Print only changes, so that a zone you walk through is easy
+     to see, and the console isn't flooded
+    ************************************************************/
+    constexpr auto ZONE_CHECK_PERIOD = std::chrono::milliseconds( 100 );
+
+    const auto run_until = std::chrono::steady_clock::now()
+                         + std::chrono::seconds( CAM_RUN_PERIOD_SEC );
+
+    std::optional<Zone> last_printed;   // empty, so the first zone always prints
+
+    while ( std::chrono::steady_clock::now() < run_until )
+        {
+        const Zone zone = current_zone( latest_zone );
+
+        if ( !last_printed 
+          || *last_printed != zone )
+            {
+            std::cout << std::format( "[{:>6} ms] zone: {}\n", now_ms() % 1000000, zone_name( zone ) );
+            last_printed = zone;
+            }
+
+        std::this_thread::sleep_for( ZONE_CHECK_PERIOD );
+        }
+
     running = false;
 
     camera.join();
     worker.join();
+    sensor_thread.join();
 
     /************************************************************
      Print capture and processing statistics
