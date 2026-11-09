@@ -116,16 +116,16 @@ void processing_loop( FrameQueue&     queue,
     /************************************************************
                             VARIABLES
     ************************************************************/
-    Frame    f;
+    Frame            f;
+    std::uint32_t    timeouts_in_row = 0; // how many timeout happened in a row 
 
     /************************************************************
      Loop until shutdown
     ************************************************************/
     while ( true ) 
         {
-
         /************************************************************
-         Pop the frame
+         Pop the frame from the queue
         ************************************************************/
         PopResult r = queue.pop_wait( f, std::chrono::milliseconds( WAIT_FOR_NEW_FRAME_MS ) );
 
@@ -140,11 +140,28 @@ void processing_loop( FrameQueue&     queue,
         /************************************************************
          If camera timed out, go to Stop (continue for now, TODO)
         ************************************************************/
-        if ( r == PopResult::TIMEOUT ) 
+        if ( r == PopResult::TIMEOUT )
             {
             ++stats.timeouts;
-            std::cerr << "No frame for " << WAIT_FOR_NEW_FRAME_MS << " ms: camera silent\n";
+
+            /************************************************************
+             Log only when the camera goes silent and when it comes
+             back, because one line per timeout hides the lines
+             that matter
+            ************************************************************/
+            if ( 0 == timeouts_in_row )
+                {
+                std::cerr << std::format( "[{} ms] camera silent: no frame for {} ms\n", now_ms(), WAIT_FOR_NEW_FRAME_MS );
+                }
+
+            ++timeouts_in_row;
             continue;
+            }
+
+        if ( timeouts_in_row > 0 )
+            {
+            std::cerr << std::format( "[{} ms] camera back after {} timeouts\n", now_ms(), timeouts_in_row );
+            timeouts_in_row = 0;
             }
 
         /************************************************************
@@ -222,6 +239,8 @@ void sensor_loop( Vl53l1xSensor&               sensor,
     constexpr auto  RETRY_DELAY = std::chrono::milliseconds( 10 );
 
     ZoneMonitor     monitor;    // starts in STOP
+    std::uint32_t   failed_reads = 0;
+    std::string     last_logged_error;
 
     try
         {
@@ -253,12 +272,37 @@ void sensor_loop( Vl53l1xSensor&               sensor,
             const Zone zone = monitor.update( distance_mm );
             latest.store( ZoneSample{ zone, now_ms() } );
 
+
+            /************************************************************
+             Log only on changes (first failure, different error,
+             recovery), because one line per failed read hides the
+             line that matters, and writing to cerr that often can
+             affect timing
+            ************************************************************/
             if ( !reading )
                 {
+                if ( 0 == failed_reads 
+                  || sensor.last_error() != last_logged_error )
+                    {
+                    std::cerr << std::format( "[{} ms] sensor read failed: {}\n", now_ms(), sensor.last_error() );
+                    last_logged_error = sensor.last_error();
+                    }
+
+                ++failed_reads;
                 std::this_thread::sleep_for( RETRY_DELAY );
                 }
-            }
-        }
+
+            else if ( failed_reads > 0 )
+                {
+                std::cerr << std::format( "[{} ms] sensor recovered after {} failed reads\n", now_ms(), failed_reads );
+                failed_reads = 0;
+                last_logged_error.clear();
+                }
+
+            } /*  while ( running ) */
+
+        } /* try */
+
     catch ( const std::exception& e )
         {
         /************************************************************
@@ -496,7 +540,7 @@ int main()
         if ( !last_printed 
           || *last_printed != zone )
             {
-            std::cout << std::format( "[{:>6} ms] zone: {}\n", now_ms() % 1000000, zone_name( zone ) );
+            std::cout << std::format( "[{:>6} ms] zone: {}\n", now_ms(), zone_name( zone ) );
             last_printed = zone;
             }
 

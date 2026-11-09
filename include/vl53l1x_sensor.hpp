@@ -71,6 +71,8 @@ class Vl53l1xSensor
         ************************************************************/
         std::optional<RangeReading> read(); // nullopt on timeout or driver error
 
+        const std::string& last_error() const { return last_error_; } // Why the last read() returned nullopt
+
         Vl53l1xSensor( const Vl53l1xSensor& )            = delete;
         Vl53l1xSensor& operator=( const Vl53l1xSensor& ) = delete;
 
@@ -78,4 +80,5 @@ class Vl53l1xSensor
         I2cDevice                   device_;
         Vl53l1PlatformAttachment    attachment_;
         RangingSession              ranging_;
+        std::string                 last_error_;
     };

@@ -232,7 +232,7 @@ std::optional<RangeReading> Vl53l1xSensor::read()
 
         if( 0 != data_ready_err )
             {
-            std::cerr << std::format( "Could not check if ranging data is ready. Got an error: 0x{:02X}\n", data_ready_err );
+            last_error_ = std::format( "Could not check if ranging data is ready. Got an error: {}", data_ready_err );
             return( std::nullopt );
             }
 
@@ -251,7 +251,7 @@ std::optional<RangeReading> Vl53l1xSensor::read()
     ************************************************************/
     if ( !data_ready )
         {
-        std::cerr << "Ranging data have NOT been ready in at least "<< NUM_OF_POLL_ATTEMPTS << " ms\n";
+        last_error_ = std::format( "Ranging data have NOT been ready in at least {} ms", NUM_OF_POLL_ATTEMPTS );
         return( std::nullopt );
         }
 
@@ -277,9 +277,9 @@ std::optional<RangeReading> Vl53l1xSensor::read()
       || 0 != distance_err 
       || 0 != clear_err )
         {
-        std::cerr << std::format( "Read failed: status {}, distance {}, clear {}\n", range_status_err, 
-                                                                                     distance_err, 
-                                                                                     clear_err );
+        last_error_ = std::format( "Read failed: status {}, distance {}, clear {}", range_status_err, 
+                                                                                    distance_err, 
+                                                                                    clear_err );
         return( std::nullopt );
         }
 
