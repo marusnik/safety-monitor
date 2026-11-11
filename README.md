@@ -19,7 +19,7 @@ system falls back to **STOP** whenever it is uncertain or its inputs go stale.
 | 1 | Raspberry Pi setup, CMake, webcam capture in C++ | Done |
 | 2 | Two-thread capture pipeline with a thread-safe queue | Done (thread sanitizer pending, see Known issues) |
 | 3 | Pretrained person detector (OpenCV DNN) | Done (one open question, see Open questions) |
-| 4 | Distance sensor (VL53L1X over I2C), zone logic with hysteresis | Planned |
+| 4 | Distance sensor (VL53L1X over I2C), zone logic with hysteresis | Done (no recovery after a sensor fault yet, see Known issues) |
 | 5 | ML safety monitor: confidence intervals, plausibility checks, fail-safe STOP | Planned |
 | 6 | Cross-checking the camera against the distance sensor | Planned |
 | 7 | Rare-scenario validation set (low light, occlusion, ...) | Planned |
@@ -31,13 +31,16 @@ system falls back to **STOP** whenever it is uncertain or its inputs go stale.
 
 - Raspberry Pi 5 (8 GB), active cooler, 27 W USB-C power supply
 - Microsoft LifeCam HD-5001 USB webcam (UVC, appears as `/dev/video0`)
-- Planned: VL53L1X time-of-flight distance sensor (I2C)
+- VL53L1X time-of-flight distance sensor on I2C bus 1 (`/dev/i2c-1`, address 0x29)
 
 ## Software
 
 - Raspberry Pi OS (64-bit)
 - C++20, g++ 14, CMake 3.31
 - OpenCV 4.10 (`libopencv-dev`)
+- ST VL53L1X Ultra Lite Driver (ULD) v3.5.5 in `third_party/vl53l1x_uld/`, unmodified
+  (ST's BSD license, see `third_party/vl53l1x_uld/LICENSE.txt`). It talks to the sensor through
+  a Linux platform adapter (`src/vl53l1_platform.cpp`) built on `I2cDevice`.
 
 ## Camera configuration
 
@@ -116,13 +119,19 @@ cmake --build build
 ## Running
 
 ```bash
-./build/safety_monitor            # runs the capture pipeline for 10 s and prints a report
+./build/safety_monitor            # camera, detector and sensor threads for CAM_RUN_PERIOD_SEC; prints zone changes and a report
 ./build/detect_image frame.jpg    # runs person detection on one image, saves result.jpg
+./build/range_check               # 20 sensor readings: valid count, min, max, average, failed statuses
+./build/sensor_check              # reads the sensor's model ID over I2C
 ./build/test_frame_queue          # ring buffer tests
 ./build/test_thread_safe_queue    # thread-safe queue tests (two threads)
+./build/test_zone_monitor         # zone logic and hysteresis tests
+./build/hw_test_i2c_device        # hardware test: needs the sensor connected
 ```
 
-No output from a test program means all tests passed.
+Run from the repository root, because the detector loads its model files from `models/`.
+No output from a test program means all tests passed (`hw_test_i2c_device` prints
+`TEST PASSED`).
 
 ## Project structure
 
@@ -132,14 +141,29 @@ include/
   frame_queue.hpp         RingBuffer<T, Capacity>: fixed-size, no heap, overwrite-oldest policy
   thread_safe_queue.hpp   ThreadSafeQueue<T, Capacity>: mutex + condition variable around RingBuffer
   person_detector.hpp     PersonDetector: loads the model, returns person boxes above a threshold
+  i2c_device.hpp          I2cDevice: RAII wrapper around /dev/i2c-1; register reads/writes as one I2C_RDWR transaction
+  vl53l1_platform_attachment.hpp  connects ST's driver to one I2cDevice for the attachment's lifetime
+  vl53l1x_api.hpp         extern "C" wrapper around ST's C header
+  vl53l1x_sensor.hpp      Vl53l1xSensor: owns bus, driver attachment and ranging; read() returns status + distance
+  zone_monitor.hpp        ZoneMonitor: distance -> CLEAR / SLOW / STOP with hysteresis
+  zone_sample.hpp         ZoneSample: zone + timestamp in one lock-free atomic; stale reads return STOP
 src/
-  main.cpp                camera thread, processing thread, report
+  main.cpp                camera, processing and sensor threads; zone printout; report
   person_detector.cpp
   detect_image.cpp        command-line tool: detect people in one image
+  i2c_device.cpp
+  vl53l1_platform.cpp     the platform functions ST's driver calls, implemented on I2cDevice
+  vl53l1x_sensor.cpp      boot/ID/init checks, start/stop ranging, read()
+  zone_monitor.cpp
+  range_check.cpp         command-line tool: ranging accuracy runs
+  sensor_check.cpp        command-line tool: model ID check
+third_party/vl53l1x_uld/  ST's driver, unmodified
 models/                   model files (not in git, see Models)
 tests/
   test_frame_queue.cpp
   test_thread_safe_queue.cpp
+  test_zone_monitor.cpp
+  hw_test_i2c_device.cpp  write, read back and restore a real sensor register
 ```
 
 ## Design
@@ -161,6 +185,60 @@ push (drop oldest if full)             on TIMEOUT: report "camera silent"
   `main()` reads them only after `join()`.
 - **Clean shutdown:** an `std::atomic<bool>` stops the camera thread, which closes the queue;
   the processing thread drains remaining frames before exiting, so no captured frame is lost.
+
+### Distance sensor path
+
+```
+[sensor thread]                                    [reader]
+read(): wait for data (max ~200 ms)                load ZoneSample
+status 0 -> distance, else nullopt          --->   older than 500 ms? -> STOP
+ZoneMonitor.update() -> zone                       else -> sample.zone
+store ZoneSample { zone, now_ms }
+```
+
+**Any sensor failure ends in STOP.** Failures are caught at three levels:
+
+1. **Startup.** The sensor must boot within 1 s, report the expected ID (0xEACC) and pass ST's
+   init before any thread starts, because a dead or wrong device must fail while the program
+   can still exit cleanly. A startup failure exits with code 1.
+2. **Every read.** An I2C error, no data within ~200 ms, or a range status other than 0 gives no
+   distance, and no distance means STOP. Valid is not the same as accurate (finding 9), so the
+   zones still need a margin.
+3. **A hung thread.** The zone is published together with its timestamp in one lock-free atomic,
+   so a reader can never pair a new zone with an old time. Readers treat a sample older than
+   500 ms as STOP, because a hung thread can't report its own failure. The initial sample is
+   already stale, so "never published" and "stopped publishing" are the same case.
+
+Other design points:
+
+- **One thread owns the driver.** Only the sensor thread calls `read()`, so ST's driver never
+  runs on two threads at once.
+- **RAII for the hardware:** `Vl53l1xSensor` owns the bus, the driver attachment and the ranging
+  session. Members are declared in that order, so they start in that order and stop in reverse:
+  ranging stops before the bus closes.
+- **The interrupt is cleared even after a failed read,** because otherwise an old result can look
+  new on the next read.
+- **Readings are logged only on change** (first failure, different error, recovery): one line
+  per retry would hide the line that matters, and writing to `cerr` that often can affect timing.
+- **Zones:** STOP below 500 mm, SLOW below 1500 mm, CLEAR beyond, with 100 mm hysteresis
+  (STOP is released at 600 mm, SLOW at 1600 mm), so a person standing on a boundary doesn't
+  make the output flicker. These are placeholder values until they are derived from the reaction
+  time (see the camera section above).
+
+### Decisions for combining camera and sensor (week 6, not built yet)
+
+- **Either channel reporting danger wins** (one-out-of-two), because each can miss a person the
+  other sees: the sensor's field of view is narrow, and the camera has no distance.
+- **Camera sees a person, sensor says CLEAR or SLOW: SLOW, not STOP,** because the camera
+  reports people anywhere in view, including far outside the zone. STOP for every person in view
+  would make the system stop so often that operators would work around it.
+- **Residual risk:** a person close to the machine but outside the sensor's cone is seen only by
+  the camera, so the output is SLOW instead of STOP.
+- **After a persistent sensor fault, STOP latches until a manual reset**, because someone may
+  have entered the area during the fault, and the cause should be checked before the machine
+  runs again. A single failed read gives STOP without latching, because a latch on every glitch
+  would hurt availability. "Persistent" will be defined as a duration, not a count, because a
+  failed read takes ~10 ms or ~200 ms depending on how it fails.
 
 ## Findings
 
@@ -286,7 +364,7 @@ detection time itself:
   false-positive rates come in week 7.
 
 ### 9. VL53L1X ranging accuracy (one room, one run per case, tape reference)
-- "Valid" does not mean accurate: with a table in the sensor's field of view,
+- "Valid" does not mean accurate: with a physical table in the sensor's field of view,
   status 0 readings were about 41 mm short at 300 mm. Raising the sensor halved the error.
 - Fixed targets up to 1600 mm (wall and dark blue shirt): individual readings were
   -23 to +11 mm from the tape. No single offset fits, so the design uses a margin
@@ -295,6 +373,30 @@ detection time itself:
 - A wall was valid out to 4000 mm. At 5000 mm, all readings were status 2 (signal failed).
 - Invalid readings map to STOP, so the monitor holds STOP if nothing is within range.
 - Not yet tested: direct sunlight, angled targets, other materials, repeatability across days.
+- After moving the sensor code into `Vl53l1xSensor`, `range_check` at 300 / 500 mm read
+  276.6 / 477.1 mm, within ~3 mm of the earlier runs: the refactor did not change the readings.
+
+### 10. End-to-end sensor path
+
+With all three threads running and a person moving in front of the sensor:
+
+- The initial stale STOP was replaced by the first real zone ~100 ms after start, which suggests
+  one reading every ~100 ms (to be confirmed from the sensor's timing budget).
+- Zones followed the movement, with the 100 mm hysteresis visible at both boundaries.
+- A hand waved closer than 500 mm went straight from CLEAR to STOP and back, as designed.
+- All threads stopped and joined cleanly (exit code 0).
+
+### 11. Unplug tests: the failure paths, seen working
+
+| Test | What happened | Result |
+|------|---------------|--------|
+| Sensor unplugged mid-run | I2C errors (`0xFF`, the adapter's -1); **STOP 38 ms after the first failed read** | Fails safe |
+| Sensor plugged back in | The bus answers again, but the sensor has reset to its defaults and never reports data ("not ready in 200 ms") | Stays STOP: safe, but no recovery |
+| Camera unplugged mid-run | `cap.read()` returned false immediately (it did not block); "camera silent" logged | Detected, **but the zone kept following the sensor**: camera loss does not feed STOP yet |
+| Camera plugged back in (about 10 times) | Never recovered; `ENODEV` (no such device) warning at shutdown | No recovery: the open handle points to a device that is gone |
+
+The sensor results confirm the design above. The camera results show the biggest gap left: for
+about 47 s the system ran with no camera and still reported SLOW.
 
 ## Models
 
@@ -324,6 +426,20 @@ validation set against a stated missed-detection requirement, not by eye.
 
 ## Known issues
 
+- **Camera loss does not feed the safety decision yet** (finding 11). The processing thread
+  knows when the camera goes silent but does not publish it. Planned: a timestamped camera
+  sample, combined with the sensor's zone so that either one going stale gives STOP.
+- **No recovery after a sensor or camera fault.** Both stay failed until the program restarts.
+  For the sensor this is safe (it stays in STOP); for the camera it is not, until the item above
+  is done. Planned: a latched fault with a manual reset (see the design decisions above).
+- **The 500 ms stale limit is provisional.** At 1.6 m/s, 500 ms is 800 mm, more than the whole
+  STOP zone. It must stay above the slowest normal update (the timing budget plus how long
+  `read()` can block) and below what the safety distance allows. The timing budget has not been
+  read from the sensor yet.
+- **The millisecond timestamp is 32 bits and wraps every 49.7 days.** If the sensor thread hung
+  for that long, an old sample would briefly look fresh again. A 64-bit timestamp would make
+  `ZoneSample` 16 bytes, which may no longer be lock-free on the Pi (the `static_assert` would
+  catch that). Alternative: stay in STOP until the timestamp changes.
 - **Thread sanitizer does not run with the Pi 5's default kernel**
   (`ThreadSanitizer: unsupported VMA range ... Found 47`). Options: boot `kernel8.img`
   (add `kernel=kernel8.img` to `/boot/firmware/config.txt`), or run the queue tests in a
