@@ -13,15 +13,15 @@
 
 Zone safety_output( ZoneSample     sensor, 
                     CameraSample   camera, 
-                    std::uint32_t  now_ms )
+                    std::uint32_t  now )
     {
 
     /************************************************************
      STOP if sensor detects something close (regardless of what 
      camera detects), or any samples are stale
     ************************************************************/
-    if ( ( now_ms - sensor.time_ms ) > STALE_ZONE_LIMIT_MS
-      || ( now_ms - camera.time_ms ) > STALE_CAMERA_LIMIT_MS 
+    if ( is_stale( sensor.time_ms, now, STALE_ZONE_LIMIT_MS )
+      || is_stale( camera.time_ms, now, STALE_CAMERA_LIMIT_MS ) 
       || sensor.zone == Zone::STOP )
         {
         return( Zone::STOP );

@@ -475,7 +475,7 @@ int main()
                                         CONSTANTS
     *************************************************************************************/
     constexpr std::uint32_t     WARMUP_READ_FRAME_NUM =  10;
-    constexpr std::uint32_t     CAM_RUN_PERIOD_SEC    =  120;    /* has to be different than zero */
+    constexpr std::uint32_t     CAM_RUN_PERIOD_SEC    =  60;    /* has to be different than zero */
     constexpr float             MIN_CONFIDENCE        =  0.3f;
 
     static_assert( CAM_RUN_PERIOD_SEC > 0, "Run period must be positive" );
@@ -633,23 +633,36 @@ int main()
 
     while ( std::chrono::steady_clock::now() < run_until )
         {
-        const Zone zone = safety_output( latest_zone_sample.load(),
-                                         latest_cam_sample.load(),
-                                         now_ms() );
+        const ZoneSample    sensor_sample = latest_zone_sample.load();
+        const CameraSample  camera_sample = latest_cam_sample.load();
+        const std::uint32_t now           = now_ms();
+
+        const Zone zone = safety_output( sensor_sample, 
+                                         camera_sample, 
+                                         now );
 
         if ( !last_printed 
           || *last_printed != zone )
             {
-            std::cout << std::format( "[{:>6} ms] zone: {}{}{} (sensor: {}{}{}, camera:{}{}{})\n", now_ms(), 
-                                                                                                   zone_color( zone ),
-                                                                                                   zone_name( zone ),
-                                                                                                   COLOR_RESET,
-                                                                                                   zone_color( latest_zone_sample.load().zone ),
-                                                                                                   zone_name(  latest_zone_sample.load().zone ),
-                                                                                                   COLOR_RESET,
-                                                                                                   cam_color( latest_cam_sample.load().person ),
-                                                                                                   cam_name(  latest_cam_sample.load().person ),
-                                                                                                   COLOR_RESET );
+            /************************************************************
+             Show "stale" instead of the last value, so the log says
+             why the output is STOP
+            ************************************************************/
+            const bool sensor_stale = is_stale( sensor_sample.time_ms, now, STALE_ZONE_LIMIT_MS );
+            const bool camera_stale = is_stale( camera_sample.time_ms, now, STALE_CAMERA_LIMIT_MS );
+
+            const char* sensor_text  = sensor_stale ? "STALE"    : zone_name( sensor_sample.zone );
+            const char* sensor_color = sensor_stale ? "\033[31m" : zone_color( sensor_sample.zone );
+
+            const char* camera_text  = camera_stale ? "STALE"    : cam_name( camera_sample.person );
+            const char* camera_color = camera_stale ? "\033[31m" : cam_color( camera_sample.person );
+
+            std::cout << std::format( "[{:>6} ms] zone: {}{}{} (sensor: {}{}{}, camera: {}{}{})\n",
+                                      now,
+                                      zone_color( zone ), zone_name( zone ), COLOR_RESET,
+                                      sensor_color,       sensor_text,       COLOR_RESET,
+                                      camera_color,       camera_text,       COLOR_RESET );
+
             last_printed = zone;
             }
 

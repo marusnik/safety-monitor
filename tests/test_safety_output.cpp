@@ -61,6 +61,7 @@ int main()
     ************************************************************/
     reset_test();
     g_now_ms = STALE_ZONE_LIMIT_MS + 1; // stale zone sample
+    g_camera.time_ms = 1;
     g_sensor.zone = Zone::CLEAR;
     assert( safety_output( g_sensor, g_camera, g_now_ms ) == Zone::STOP );
 
@@ -69,7 +70,7 @@ int main()
     ************************************************************/
     reset_test();
     g_sensor.time_ms = 1; // zone sample not stale
-    g_now_ms = STALE_ZONE_LIMIT_MS + 1; // stale camera sample
+    g_now_ms = STALE_CAMERA_LIMIT_MS + 1; // stale camera sample
     g_sensor.zone = Zone::CLEAR;
     assert( safety_output( g_sensor, g_camera, g_now_ms ) == Zone::STOP );
 
@@ -113,6 +114,30 @@ int main()
     g_camera.person = false;
     g_sensor.zone = Zone::CLEAR;
     assert( safety_output( g_sensor, g_camera, g_now_ms ) == Zone::CLEAR );
+
+    /************************************************************
+     Tests for the 32-bit wrap: timestamps taken just before
+     the wrap must still look fresh just after it, because
+     unsigned subtraction is modulo 2^32
+    ************************************************************/
+    reset_test();
+    g_sensor.time_ms = 0xFFFFFFF6;   // 10 ms before the wrap
+    g_camera.time_ms = 0xFFFFFFF6;
+    g_now_ms         = 10;           // 10 ms after the wrap: age 20 ms
+    g_sensor.zone    = Zone::CLEAR;
+    g_camera.person  = false;
+    assert( safety_output( g_sensor, g_camera, g_now_ms ) == Zone::CLEAR );
+
+    /************************************************************
+     Same wrap, but old enough to be stale: must still give STOP,
+     so the wrap can't make old data look fresh
+    ************************************************************/
+    reset_test();
+    g_sensor.time_ms = 0xFFFFFFF6;
+    g_camera.time_ms = 0xFFFFFFF6;
+    g_now_ms         = STALE_ZONE_LIMIT_MS + 1;   // age 511 ms
+    g_sensor.zone    = Zone::CLEAR;
+    assert( safety_output( g_sensor, g_camera, g_now_ms ) == Zone::STOP );
 
     return( 0 );
     
