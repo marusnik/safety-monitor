@@ -4,10 +4,10 @@
                                       INCLUDES
 *************************************************************************************/
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 
 #include "zone_monitor.hpp"
+#include "clock.hpp"
 
 
 /*************************************************************************************
@@ -42,16 +42,6 @@ static_assert( std::atomic<ZoneSample>::is_always_lock_free, "ZoneSample atomic 
 /*************************************************************************************
                                       FUNCTIONS
 *************************************************************************************/
-/************************************************************
- steady_clock, because a system clock change (NTP) could
- otherwise make old data look fresh
-************************************************************/
-inline std::uint32_t now_ms()
-    {
-    return static_cast<std::uint32_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch() ).count() );
-    }
 
 /************************************************************
  Reader side: returns STOP if the sample is too old, because

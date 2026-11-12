@@ -18,7 +18,8 @@ add_executable(safety_monitor src/main.cpp
                               src/vl53l1x_sensor.cpp
                               src/zone_monitor.cpp 
                               src/vl53l1_platform.cpp
-                              src/i2c_device.cpp)
+                              src/i2c_device.cpp
+                              src/safety_output.cpp)
 target_include_directories(safety_monitor PRIVATE include)
 target_link_libraries(safety_monitor PRIVATE ${OpenCV_LIBS}
                                                vl53l1x_uld)
@@ -46,6 +47,14 @@ add_executable(test_zone_monitor tests/test_zone_monitor.cpp
                                  src/zone_monitor.cpp)
 target_include_directories(test_zone_monitor PRIVATE include)
 target_compile_options(test_zone_monitor PRIVATE -Wall -Wextra -Wconversion)
+
+#--------------------------------------------
+# test_safety_output
+#--------------------------------------------
+add_executable(test_safety_output tests/test_safety_output.cpp 
+                                  src/safety_output.cpp)
+target_include_directories(test_safety_output PRIVATE include)
+target_compile_options(test_safety_output PRIVATE -Wall -Wextra -Wconversion)
 
 #--------------------------------------------
 # hw_test_i2c_device

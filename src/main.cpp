@@ -17,6 +17,15 @@
 #include "vl53l1x_sensor.hpp"
 #include "zone_monitor.hpp"
 #include "zone_sample.hpp"
+#include "camera_sample.hpp"
+#include "safety_output.hpp"
+
+
+/*************************************************************************************
+                                     CONSTANTS
+*************************************************************************************/
+
+inline constexpr const char* COLOR_RESET = "\033[0m";
 
 
 /*************************************************************************************
@@ -104,9 +113,10 @@ void camera_loop( cv::VideoCapture &         cap,
 *
 *****************************************************************************/
 
-void processing_loop( FrameQueue&     queue, 
-                      ProcessStats&   stats,
-                      PersonDetector& detector )
+void processing_loop( FrameQueue&                    queue, 
+                      ProcessStats&                  stats,
+                      PersonDetector&                detector,
+                      std::atomic<CameraSample>&     latest_cam_sample )
     {
     /************************************************************
                             CONSTANTS
@@ -181,14 +191,20 @@ void processing_loop( FrameQueue&     queue,
 
         stats.detection_time_sum_ms = stats.detection_time_sum_ms + std::chrono::duration<double, std::milli>( t1 - t0 ).count();
 
+        const bool person = !detections.empty();
+       
         /************************************************************
-         Detect people in the image
+         Publish every processed frame; timestamp is the camera's 
+         proof of life. Staleness should include time since the image
+         was taken (so use captured_at, instead of now_ms)
         ************************************************************/
-        if ( !detections.empty() )
+        latest_cam_sample.store( CameraSample{ person, to_ms( f.captured_at ) } );
+
+        if ( person )
             {
             ++stats.num_of_proc_frames_with_detection;
             }
-        
+       
         /************************************************************
          Calculate latency, between when the image was pushed onto 
          the queue to after pop and detection (now)
@@ -379,6 +395,72 @@ const char* zone_name( Zone zone )
 /*****************************************************************************
 *
 *   PROCEDURE NAME:
+*       zone_color()
+*
+*   DESCRIPTION:
+*       ANSI terminal colors, so zone changes stand out in the log
+*
+*****************************************************************************/
+
+inline const char* zone_color( Zone z )
+    {
+    switch ( z )
+        {
+        case Zone::CLEAR: return "\033[32m";   // green
+        case Zone::SLOW:  return "\033[33m";   // yellow
+        case Zone::STOP:  return "\033[31m";   // red
+        }
+    return "\033[0m";
+    }
+
+
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       cam_name()
+*
+*   DESCRIPTION:
+*       Returns a printable name for a person present or not
+*
+*****************************************************************************/
+
+const char* cam_name( bool person_present )
+    {
+    switch ( person_present )
+        {
+        case true:  return "Person Present";
+        case false: return "Person NOT Present";
+        }
+
+    return "UNKNOWN";   // unreachable, but makes -Wall/-Wextra happy
+
+    } /* cam_name() */
+
+
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       cam_color()
+*
+*   DESCRIPTION:
+*       ANSI terminal colors, so person detection stand out in the log
+*
+*****************************************************************************/
+
+inline const char* cam_color( bool person_present )
+    {
+    switch ( person_present )
+        {
+        case true:  return "\033[32m";   // green
+        case false: return "\033[31m";   // red
+        }
+    return "\033[0m";
+    }
+
+
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
 *       main
 *
 *   DESCRIPTION:
@@ -393,7 +475,7 @@ int main()
                                         CONSTANTS
     *************************************************************************************/
     constexpr std::uint32_t     WARMUP_READ_FRAME_NUM =  10;
-    constexpr std::uint32_t     CAM_RUN_PERIOD_SEC    =  60;    /* has to be different than zero */
+    constexpr std::uint32_t     CAM_RUN_PERIOD_SEC    =  120;    /* has to be different than zero */
     constexpr float             MIN_CONFIDENCE        =  0.3f;
 
     static_assert( CAM_RUN_PERIOD_SEC > 0, "Run period must be positive" );
@@ -401,13 +483,14 @@ int main()
     /*************************************************************************************
                                         VARIABLES
     *************************************************************************************/
-    std::atomic<bool>       running{ true };
-    FrameQueue              queue;
-    CaptureStats            cstats;
-    ProcessStats            pstats;
-    ZoneSample              initial;
-    std::atomic<ZoneSample> latest_zone;
-    
+    std::atomic<bool>         running{ true };
+    FrameQueue                queue;
+    CaptureStats              cstats;
+    ProcessStats              pstats;
+    ZoneSample                zone_initial;
+    CameraSample              camera_initial;
+    std::atomic<ZoneSample>   latest_zone_sample;
+    std::atomic<CameraSample> latest_cam_sample;
 
     /************************************************************
      Open video capture; if not successfully, throw an error
@@ -501,24 +584,39 @@ int main()
         }
 
     /************************************************************
+     Start with a stale assumption that a person is present
+    ************************************************************/
+    camera_initial.person = true;
+    camera_initial.time_ms = now_ms() - STALE_CAMERA_LIMIT_MS - 1;
+
+    latest_cam_sample.store( camera_initial );
+
+    /************************************************************
      Spin up the capture and processing threads
     ************************************************************/
-    std::thread camera( [ & ] { camera_loop( cap, queue, running, cstats ); } );
-    std::thread worker( [ & ] { processing_loop( queue, pstats, *detector ); } );
+    std::thread camera( [ & ] { camera_loop( cap, 
+                                             queue, 
+                                             running, 
+                                             cstats ); } );
+
+    std::thread worker( [ & ] { processing_loop( queue, 
+                                                 pstats, 
+                                                *detector, 
+                                                 latest_cam_sample ); } );
 
     /************************************************************
      Start with a stale initial zone
     ************************************************************/
-    initial.zone    = Zone::STOP;
-    initial.time_ms = now_ms() - STALE_ZONE_LIMIT_MS - 1;
+    zone_initial.zone    = Zone::STOP;
+    zone_initial.time_ms = now_ms() - STALE_ZONE_LIMIT_MS - 1;
 
-    latest_zone.store( initial );
+    latest_zone_sample.store( zone_initial );
 
     /************************************************************
      Spin up the sensor thread
     ************************************************************/
     std::thread sensor_thread( [ & ] { sensor_loop( *sensor, 
-                                                     latest_zone,
+                                                     latest_zone_sample,
                                                      running ); } );
 
     /************************************************************
@@ -535,12 +633,23 @@ int main()
 
     while ( std::chrono::steady_clock::now() < run_until )
         {
-        const Zone zone = current_zone( latest_zone );
+        const Zone zone = safety_output( latest_zone_sample.load(),
+                                         latest_cam_sample.load(),
+                                         now_ms() );
 
         if ( !last_printed 
           || *last_printed != zone )
             {
-            std::cout << std::format( "[{:>6} ms] zone: {}\n", now_ms(), zone_name( zone ) );
+            std::cout << std::format( "[{:>6} ms] zone: {}{}{} (sensor: {}{}{}, camera:{}{}{})\n", now_ms(), 
+                                                                                                   zone_color( zone ),
+                                                                                                   zone_name( zone ),
+                                                                                                   COLOR_RESET,
+                                                                                                   zone_color( latest_zone_sample.load().zone ),
+                                                                                                   zone_name(  latest_zone_sample.load().zone ),
+                                                                                                   COLOR_RESET,
+                                                                                                   cam_color( latest_cam_sample.load().person ),
+                                                                                                   cam_name(  latest_cam_sample.load().person ),
+                                                                                                   COLOR_RESET );
             last_printed = zone;
             }
 
