@@ -21,7 +21,7 @@ system falls back to **STOP** whenever it is uncertain or its inputs go stale.
 | 3 | Pretrained person detector (OpenCV DNN) | Done (one open question, see Open questions) |
 | 4 | Distance sensor (VL53L1X over I2C), zone logic with hysteresis | Done (no recovery after a sensor fault yet, see Known issues) |
 | 5 | ML safety monitor: confidence intervals, plausibility checks, fail-safe STOP | Planned |
-| 6 | Cross-checking the camera against the distance sensor | Planned |
+| 6 | Cross-checking the camera against the distance sensor | In progress (combined decision done; latched fault and reset pending) |
 | 7 | Rare-scenario validation set (low light, occlusion, ...) | Planned |
 | 8 | Profiling, sanitizers, CI | Planned |
 | 9 | Requirements traced to tests, safety argument | Planned |
@@ -126,6 +126,7 @@ cmake --build build
 ./build/test_frame_queue          # ring buffer tests
 ./build/test_thread_safe_queue    # thread-safe queue tests (two threads)
 ./build/test_zone_monitor         # zone logic and hysteresis tests
+./build/test_safety_output        # combined camera + sensor decision tests
 ./build/hw_test_i2c_device        # hardware test: needs the sensor connected
 ```
 
@@ -147,6 +148,9 @@ include/
   vl53l1x_sensor.hpp      Vl53l1xSensor: owns bus, driver attachment and ranging; read() returns status + distance
   zone_monitor.hpp        ZoneMonitor: distance -> CLEAR / SLOW / STOP with hysteresis
   zone_sample.hpp         ZoneSample: zone + timestamp in one lock-free atomic; stale reads return STOP
+  camera_sample.hpp       CameraSample: person seen + capture timestamp in one lock-free atomic
+  clock.hpp               steady-clock milliseconds (to_ms, now_ms), shared by both samples
+  safety_output.hpp       safety_output(): combines the sensor and camera samples into one zone
 src/
   main.cpp                camera, processing and sensor threads; zone printout; report
   person_detector.cpp
@@ -155,6 +159,7 @@ src/
   vl53l1_platform.cpp     the platform functions ST's driver calls, implemented on I2cDevice
   vl53l1x_sensor.cpp      boot/ID/init checks, start/stop ranging, read()
   zone_monitor.cpp
+  safety_output.cpp
   range_check.cpp         command-line tool: ranging accuracy runs
   sensor_check.cpp        command-line tool: model ID check
 third_party/vl53l1x_uld/  ST's driver, unmodified
@@ -163,6 +168,7 @@ tests/
   test_frame_queue.cpp
   test_thread_safe_queue.cpp
   test_zone_monitor.cpp
+  test_safety_output.cpp
   hw_test_i2c_device.cpp  write, read back and restore a real sensor register
 ```
 
@@ -225,7 +231,35 @@ Other design points:
   make the output flicker. These are placeholder values until they are derived from the reaction
   time (see the camera section above).
 
-### Decisions for combining camera and sensor (week 6, not built yet)
+### Combining camera and sensor (week 6)
+
+```
+[processing thread]                         [main loop, every 100 ms]
+after each detection:                       load ZoneSample + CameraSample
+store CameraSample { person, captured_at }  safety_output(sensor, camera, now) -> zone
+on TIMEOUT: store nothing                   print zone changes
+```
+
+`safety_output()` is a pure function with the time passed in, so every rule can be unit tested
+without threads or hardware. Its rules, in order:
+
+| Condition | Output |
+|-----------|--------|
+| Sensor sample older than 500 ms | STOP |
+| Camera sample older than 500 ms | STOP |
+| Sensor says STOP | STOP |
+| Camera sees a person, sensor says CLEAR or SLOW | SLOW |
+| Otherwise | the sensor's zone |
+
+- **Both staleness checks come first,** because a stale value is not evidence of anything. A
+  stale "person present" must not be allowed to produce SLOW (finding 12).
+- **The camera sample is stamped with `captured_at`, not the time detection finished,** because
+  a detection describes the scene when the image was taken. Its age therefore includes the
+  detection time (~80 ms).
+- **On a camera timeout nothing is published,** so camera loss is handled by staleness, the same
+  way as a hung sensor thread. The initial camera sample is already stale.
+
+Design decisions:
 
 - **Either channel reporting danger wins** (one-out-of-two), because each can miss a person the
   other sees: the sensor's field of view is narrow, and the camera has no distance.
@@ -238,7 +272,7 @@ Other design points:
   have entered the area during the fault, and the cause should be checked before the machine
   runs again. A single failed read gives STOP without latching, because a latch on every glitch
   would hurt availability. "Persistent" will be defined as a duration, not a count, because a
-  failed read takes ~10 ms or ~200 ms depending on how it fails.
+  failed read takes ~10 ms or ~200 ms depending on how it fails. Not built yet.
 
 ## Findings
 
@@ -392,11 +426,32 @@ With all three threads running and a person moving in front of the sensor:
 |------|---------------|--------|
 | Sensor unplugged mid-run | I2C errors (`0xFF`, the adapter's -1); **STOP 38 ms after the first failed read** | Fails safe |
 | Sensor plugged back in | The bus answers again, but the sensor has reset to its defaults and never reports data ("not ready in 200 ms") | Stays STOP: safe, but no recovery |
-| Camera unplugged mid-run | `cap.read()` returned false immediately (it did not block); "camera silent" logged | Detected, **but the zone kept following the sensor**: camera loss does not feed STOP yet |
+| Camera unplugged mid-run (before week 6) | `cap.read()` returned false immediately (it did not block); "camera silent" logged | Detected, **but the zone kept following the sensor**: camera loss did not feed STOP (fixed, see finding 12) |
 | Camera plugged back in (about 10 times) | Never recovered; `ENODEV` (no such device) warning at shutdown | No recovery: the open handle points to a device that is gone |
 
 The sensor results confirm the design above. The camera results show the biggest gap left: for
 about 47 s the system ran with no camera and still reported SLOW.
+
+### 12. Camera loss now gives STOP
+
+Same test as finding 11, after adding `CameraSample` and `safety_output()`: a person in front
+of both channels (output SLOW), then the camera unplugged and left out.
+
+| Run | What happened | Result |
+|-----|---------------|--------|
+| 1 | Output stayed SLOW for ~33 s with a stale camera, and changed to STOP only when the sensor itself said STOP | **Bug:** a copy-paste error let the stale "person present" sample reach the SLOW rule |
+| 2 (fixed) | **STOP while the sensor was fresh and said SLOW**, 42 ms before the 500 ms "camera silent" log | Fails safe |
+
+- **STOP comes before the "camera silent" log, as expected,** because the two timers start at
+  different points: staleness counts from `captured_at`, the pop timeout from the last pop,
+  which comes after the queue wait and ~80 ms of detection.
+- **Worst-case reaction is ~600 ms, not 500 ms:** 500 ms staleness from the last image, plus up
+  to 100 ms until the main loop next checks.
+- **The unit test would have caught the bug, but it wasn't run before the hardware test.** It
+  also had a weakness: the test setup sets the sensor to STOP, so the stale-camera case returned
+  STOP from the sensor and never reached the camera check. Each test now needs to be checked by
+  removing the rule it covers and seeing it fail. Running the tests on every build (CTest) is
+  planned for week 8.
 
 ## Models
 
@@ -426,14 +481,13 @@ validation set against a stated missed-detection requirement, not by eye.
 
 ## Known issues
 
-- **Camera loss does not feed the safety decision yet** (finding 11). The processing thread
-  knows when the camera goes silent but does not publish it. Planned: a timestamped camera
-  sample, combined with the sensor's zone so that either one going stale gives STOP.
 - **No recovery after a sensor or camera fault.** Both stay failed until the program restarts.
-  For the sensor this is safe (it stays in STOP); for the camera it is not, until the item above
-  is done. Planned: a latched fault with a manual reset (see the design decisions above).
-- **The 500 ms stale limit is provisional.** At 1.6 m/s, 500 ms is 800 mm, more than the whole
-  STOP zone. It must stay above the slowest normal update (the timing budget plus how long
+  This is safe (both give STOP), but not available. Planned: a latched fault with a manual reset
+  (see the design decisions above), sensor re-init and camera re-open.
+- **One missed detection drops SLOW to CLEAR immediately** (finding 8: 68 of 77 frames in dim
+  light). Planned for week 5: hold "person present" for a short time after the last detection.
+- **The 500 ms stale limits (sensor and camera) are provisional.** At 1.6 m/s, 500 ms is 800 mm,
+  more than the whole STOP zone, and the end-to-end reaction is ~600 ms (finding 12). It must stay above the slowest normal update (the timing budget plus how long
   `read()` can block) and below what the safety distance allows. The timing budget has not been
   read from the sensor yet.
 - **The millisecond timestamp is 32 bits and wraps every 49.7 days.** If the sensor thread hung
