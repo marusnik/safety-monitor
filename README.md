@@ -14,18 +14,18 @@ system falls back to **STOP** whenever it is uncertain or its inputs go stale.
 
 ## Status
 
-| Week | Topic | Status |
-|---|---|---|
-| 1 | Raspberry Pi setup, CMake, webcam capture in C++ | Done |
-| 2 | Two-thread capture pipeline with a thread-safe queue | Done (thread sanitizer pending, see Known issues) |
-| 3 | Pretrained person detector (OpenCV DNN) | Done (one open question, see Open questions) |
-| 4 | Distance sensor (VL53L1X over I2C), zone logic with hysteresis | Done (no recovery after a sensor fault yet, see Known issues) |
-| 5 | ML safety monitor: confidence intervals, plausibility checks, fail-safe STOP | Planned |
-| 6 | Cross-checking the camera against the distance sensor | In progress (combined decision done; latched fault and reset pending) |
-| 7 | Rare-scenario validation set (low light, occlusion, ...) | Planned |
-| 8 | Profiling, sanitizers, CI | Planned |
-| 9 | Requirements traced to tests, safety argument | Planned |
-| 10 | Documentation and demo | Planned |
+| Week | Topic                                                                        | Status                                                                |
+|------|------------------------------------------------------------------------------|-----------------------------------------------------------------------|
+| 1    | Raspberry Pi setup, CMake, webcam capture in C++                             | Done                                                                  |
+| 2    | Two-thread capture pipeline with a thread-safe queue                         | Done (thread sanitizer pending, see Known issues)                     |
+| 3    | Pretrained person detector (OpenCV DNN)                                      | Done (one open question, see Open questions)                          |
+| 4    | Distance sensor (VL53L1X over I2C), zone logic with hysteresis               | Done (no recovery after a sensor fault yet, see Known issues)         |
+| 5    | ML safety monitor: confidence intervals, plausibility checks, fail-safe STOP | Planned                                                               |
+| 6    | Cross-checking the camera against the distance sensor                        | In progress (combined decision done; latched fault and reset pending) |
+| 7    | Rare-scenario validation set (low light, occlusion, ...)                     | Planned                                                               |
+| 8    | Profiling, sanitizers, CI                                                    | Planned                                                               |
+| 9    | Requirements traced to tests, safety argument                                | Planned                                                               |
+| 10   | Documentation and demo                                                       | Planned                                                               |
 
 ## Hardware
 
@@ -243,13 +243,13 @@ on TIMEOUT: store nothing                   print zone changes
 `safety_output()` is a pure function with the time passed in, so every rule can be unit tested
 without threads or hardware. Its rules, in order:
 
-| Condition | Output |
-|-----------|--------|
-| Sensor sample older than 500 ms | STOP |
-| Camera sample older than 500 ms | STOP |
-| Sensor says STOP | STOP |
-| Camera sees a person, sensor says CLEAR or SLOW | SLOW |
-| Otherwise | the sensor's zone |
+| Condition                                       | Output            |
+|-------------------------------------------------|-------------------|
+| Sensor sample older than 500 ms                 | STOP              |
+| Camera sample older than 500 ms                 | STOP              |
+| Sensor says STOP                                | STOP              |
+| Camera sees a person, sensor says CLEAR or SLOW | SLOW              |
+| Otherwise                                       | the sensor's zone |
 
 - **Both staleness checks come first,** because a stale value is not evidence of anything. A
   stale "person present" must not be allowed to produce SLOW (finding 12).
@@ -437,9 +437,9 @@ about 47 s the system ran with no camera and still reported SLOW.
 Same test as finding 11, after adding `CameraSample` and `safety_output()`: a person in front
 of both channels (output SLOW), then the camera unplugged and left out.
 
-| Run | What happened | Result |
-|-----|---------------|--------|
-| 1 | Output stayed SLOW for ~33 s with a stale camera, and changed to STOP only when the sensor itself said STOP | **Bug:** a copy-paste error let the stale "person present" sample reach the SLOW rule |
+| Run       | What happened                                                                                               | Result                                                                                |
+|-----------|-------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------|
+| 1         | Output stayed SLOW for ~33 s with a stale camera, and changed to STOP only when the sensor itself said STOP | **Bug:** a copy-paste error let the stale "person present" sample reach the SLOW rule |
 | 2 (fixed) | **STOP while the sensor was fresh and said SLOW**, 42 ms before the 500 ms "camera silent" log | Fails safe |
 
 - **STOP comes before the "camera silent" log, as expected,** because the two timers start at

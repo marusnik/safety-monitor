@@ -8,7 +8,9 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
-#include <cmath>
+#include <poll.h>
+#include <unistd.h>
+#include <cerrno>
 
 #include "frame.hpp"
 #include "thread_safe_queue.hpp"
@@ -19,6 +21,7 @@
 #include "zone_sample.hpp"
 #include "camera_sample.hpp"
 #include "safety_output.hpp"
+#include "safety_latch.hpp"
 
 
 /*************************************************************************************
@@ -246,7 +249,11 @@ void processing_loop( FrameQueue&                    queue,
 
 void sensor_loop( Vl53l1xSensor&               sensor,
                   std::atomic<ZoneSample>&     latest,
-                  const std::atomic<bool>&     running )
+                  const std::atomic<bool>&     running 
+#ifdef FAULT_INJECTION
+                  , std::atomic<bool>&         inject_fault
+#endif
+                                                       )
     {
     /************************************************************
      Short pause after a failed read, so that a dead bus can't
@@ -254,8 +261,10 @@ void sensor_loop( Vl53l1xSensor&               sensor,
     ************************************************************/
     constexpr auto  RETRY_DELAY = std::chrono::milliseconds( 10 );
 
-    ZoneMonitor     monitor;    // starts in STOP
-    std::uint32_t   failed_reads = 0;
+    ZoneMonitor     monitor;    
+    std::uint32_t   failed_reads       = 0;
+    std::uint32_t   invalid_readings   = 0;
+    std::uint8_t    last_logged_status = 0;
     std::string     last_logged_error;
 
     try
@@ -281,12 +290,23 @@ void sensor_loop( Vl53l1xSensor&               sensor,
                 distance_mm = reading->distance_mm;
                 }
 
+#ifdef FAULT_INJECTION
+            /************************************************************
+             Drop the distance as if the reading were invalid
+            ************************************************************/
+            if ( inject_fault )
+                {
+                distance_mm.reset();   
+                }
+#endif
+
             /************************************************************
              Publish even on failure, because "sensor not working, so
              STOP" is fresh information too
             ************************************************************/
             const Zone zone = monitor.update( distance_mm );
-            latest.store( ZoneSample{ zone, now_ms() } );
+            const bool fault = !distance_mm;
+            latest.store( ZoneSample{ zone, fault, now_ms() } );
 
 
             /************************************************************
@@ -315,6 +335,42 @@ void sensor_loop( Vl53l1xSensor&               sensor,
                 last_logged_error.clear();
                 }
 
+            /************************************************************
+             The read worked, but the sensor says the distance can't be
+             trusted (non-zero range status)
+            ************************************************************/
+            if ( reading )
+                {
+                if ( !reading->valid() )
+                    {
+                    /************************************************************
+                     Log on change only: first invalid status, a different status, 
+                     and back to valid
+                    ************************************************************/
+                    if ( 0 == invalid_readings
+                      || reading->status != last_logged_status )
+                        {
+                        std::cerr << std::format( "[{} ms] sensor range status {} (distance {} mm)\n",
+                                                  now_ms(), reading->status, reading->distance_mm );
+                        last_logged_status = reading->status;
+                        }
+                
+                    ++invalid_readings;
+                    }
+                
+                /************************************************************
+                 Back to valid readings
+                ************************************************************/
+                else if ( invalid_readings > 0 )
+                    {
+                    std::cerr << std::format( "[{} ms] sensor status valid again after {} invalid readings\n",
+                                              now_ms(), invalid_readings );
+                    invalid_readings   = 0;
+                    last_logged_status = 0;
+                    }
+
+                } /* if ( reading ) */
+
             } /*  while ( running ) */
 
         } /* try */
@@ -325,17 +381,108 @@ void sensor_loop( Vl53l1xSensor&               sensor,
          Uncaught exception in a std::thread calls std::terminate.
          Publish STOP and exit; staleness keeps readers in STOP
         ************************************************************/
-        latest.store( ZoneSample{ Zone::STOP, now_ms() } );
+        latest.store( ZoneSample{ Zone::STOP, true, now_ms() } );
         std::cerr << "Sensor thread failed: " << e.what() << '\n';
         }
     catch ( ... )
         {
-        latest.store( ZoneSample{ Zone::STOP, now_ms() } );
+        latest.store( ZoneSample{ Zone::STOP, true, now_ms() } );
         std::cerr << "Sensor thread failed: unknown exception\n";
         }
 
     } /* sensor_loop() */
     
+
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       keyboard_loop()
+*
+*   DESCRIPTION:
+*       Keyboard thread: 'r' + Enter requests a reset ('f' toggles an
+*       injected fault in test builds, FAULT_INJECTION needed). Polls with a 
+*       timeout so it can stop at shutdown.
+*
+*****************************************************************************/
+
+void keyboard_loop( std::atomic<bool>&          reset_requested,
+                    const std::atomic<bool>&    running 
+#ifdef FAULT_INJECTION
+                  , std::atomic<bool>&          inject_fault
+#endif
+                                                                )
+   {
+
+    while ( running )
+        {
+        /************************************************************
+         Wake every 100 ms to check if the program is still running
+        ************************************************************/
+        pollfd pfd{ STDIN_FILENO, POLLIN, 0 };
+        const int ready = poll( &pfd, 1, 100 ); 
+
+        if ( ready < 0 )
+            {
+            /************************************************************
+             Interrupted by a signal: just retry 
+            ************************************************************/
+            if ( errno == EINTR ) 
+                {
+                continue;
+                }
+
+            std::cerr << "keyboard: poll failed, reset unavailable\n";
+            return;
+            }
+
+        /************************************************************
+         Timeout: no key, check running again
+        ************************************************************/
+        if ( ready == 0 ) 
+            {
+            continue;
+            }
+
+        /************************************************************
+         We have a key press, read it
+        ************************************************************/
+        char buf[ 64 ];
+        const ssize_t n = read( STDIN_FILENO, buf, sizeof( buf ) );
+
+        if ( n <= 0 )                              // EOF or error: input is gone
+            {
+            std::cerr << "keyboard: input closed, reset unavailable\n";
+            return;
+            }
+
+        /************************************************************
+         If any of the pressed keys is 'r' we have a reset
+        ************************************************************/
+        for ( ssize_t i = 0; i < n; ++i )
+            {
+            if ( buf[ i ] == 'r' ) 
+               { 
+               reset_requested = true;
+               }
+
+#ifdef FAULT_INJECTION
+            /************************************************************
+             Inject/clear a fault with 'f'
+            ************************************************************/
+            if ( buf[ i ] == 'f' )
+                {
+                const bool on = !inject_fault.load();
+                inject_fault  = on;
+                std::cerr << std::format( "[{} ms] fault injection {}\n", now_ms(), on ? "ON" : "OFF" );
+                }
+#endif
+
+            } /* for() */
+
+        } /* while() */
+
+   } /* keyboard_loop() */  
+
 
 /*****************************************************************************
 *
@@ -375,6 +522,7 @@ std::optional<PersonDetector> make_detector( float min_confidence )
 *
 *   DESCRIPTION:
 *       Returns a printable name for a zone
+*       TODO: move all the *_name() and *_color() into a separate file
 *
 *****************************************************************************/
 
@@ -410,8 +558,10 @@ inline const char* zone_color( Zone z )
         case Zone::SLOW:  return "\033[33m";   // yellow
         case Zone::STOP:  return "\033[31m";   // red
         }
+
     return "\033[0m";
-    }
+
+    } /* zone_color() */
 
 
 /*****************************************************************************
@@ -454,8 +604,58 @@ inline const char* cam_color( bool person_present )
         case true:  return "\033[32m";   // green
         case false: return "\033[31m";   // red
         }
+
     return "\033[0m";
-    }
+
+    } /* cam_color() */
+
+
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       latch_name()
+*
+*   DESCRIPTION:
+*       Returns a printable name for the current latch state
+*
+*****************************************************************************/
+
+const char* latch_name( LatchState s )
+    {
+    switch ( s )
+        {
+        case LatchState::OK:            return "OK";
+        case LatchState::FAULT_PENDING: return "FAULT_PENDING";
+        case LatchState::LATCHED:       return "LATCHED";
+        }
+
+    return "UNKNOWN";   // unreachable, but makes -Wall/-Wextra happy
+
+    } /* latch_name() */
+
+
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       latch_color()
+*
+*   DESCRIPTION:
+*       ANSI terminal colors, so latch state changes stand out in the log
+*
+*****************************************************************************/
+
+inline const char* latch_color( LatchState latch_state )
+    {
+    switch ( latch_state )
+        {
+        case LatchState::OK:             return "\033[32m";   // green
+        case LatchState::FAULT_PENDING:  return "\033[33m";   // yellow
+        case LatchState::LATCHED:        return "\033[31m";   // red
+        }
+
+    return "\033[0m";
+
+    } /* latch_color() */
 
 
 /*****************************************************************************
@@ -475,8 +675,8 @@ int main()
                                         CONSTANTS
     *************************************************************************************/
     constexpr std::uint32_t     WARMUP_READ_FRAME_NUM =  10;
-    constexpr std::uint32_t     CAM_RUN_PERIOD_SEC    =  60;    /* has to be different than zero */
-    constexpr float             MIN_CONFIDENCE        =  0.3f;
+    constexpr std::uint32_t     CAM_RUN_PERIOD_SEC    =  120;    /* !!! has to be different than zero */
+    constexpr float             MIN_CONFIDENCE        =   0.3f;
 
     static_assert( CAM_RUN_PERIOD_SEC > 0, "Run period must be positive" );
 
@@ -491,13 +691,20 @@ int main()
     CameraSample              camera_initial;
     std::atomic<ZoneSample>   latest_zone_sample;
     std::atomic<CameraSample> latest_cam_sample;
+    std::atomic<bool>         reset_requested{ false };
+#ifdef FAULT_INJECTION
+    std::atomic<bool>         inject_fault{ false }; 
+    std::cerr << "\033[31mWARNING: fault injection enabled (test build), press 'f' to toggle a sensor fault\033[0m\n";
+ #endif
 
     /************************************************************
      Open video capture; if not successfully, throw an error
-     0 = /dev/video0
+     0 = /dev/video0 (or open by the stable name, 
+                      /def/video0 sometimes changes to video1 after replugs)
      V4L2 = the Linux video system
     ************************************************************/
-    cv::VideoCapture cap( 0, cv::CAP_V4L2 );  
+    //cv::VideoCapture cap( 0, cv::CAP_V4L2 );  
+    cv::VideoCapture cap( "/dev/v4l/by-id/usb-Microsoft_Microsoft®_LifeCam_HD-5001-video-index0", cv::CAP_V4L2 );
 
     if( !cap.isOpened() )
         {
@@ -605,9 +812,20 @@ int main()
                                                  latest_cam_sample ); } );
 
     /************************************************************
-     Start with a stale initial zone
+     Spin up the keyboard thread monitoring the reset button 'r'
+    ************************************************************/
+    std::thread keyboard_thread( [ & ] { keyboard_loop( reset_requested, 
+                                                        running
+#ifdef FAULT_INJECTION
+                                                      , inject_fault
+#endif
+                                                                         ); } );
+
+    /************************************************************
+     Start with a faulty stale initial zone
     ************************************************************/
     zone_initial.zone    = Zone::STOP;
+    zone_initial.fault   = true;
     zone_initial.time_ms = now_ms() - STALE_ZONE_LIMIT_MS - 1;
 
     latest_zone_sample.store( zone_initial );
@@ -617,7 +835,11 @@ int main()
     ************************************************************/
     std::thread sensor_thread( [ & ] { sensor_loop( *sensor, 
                                                      latest_zone_sample,
-                                                     running ); } );
+                                                     running
+#ifdef FAULT_INJECTION
+                                                   , inject_fault
+#endif
+                                                             ); } );
 
     /************************************************************
      Run for CAM_RUN_PERIOD_SEC, checking the zone every 100 ms.
@@ -629,7 +851,9 @@ int main()
     const auto run_until = std::chrono::steady_clock::now()
                          + std::chrono::seconds( CAM_RUN_PERIOD_SEC );
 
-    std::optional<Zone> last_printed;   // empty, so the first zone always prints
+    SafetyLatch               latch;
+    std::optional<Zone>       last_printed_zone;
+    std::optional<LatchState> last_printed_latch_state;
 
     while ( std::chrono::steady_clock::now() < run_until )
         {
@@ -637,12 +861,74 @@ int main()
         const CameraSample  camera_sample = latest_cam_sample.load();
         const std::uint32_t now           = now_ms();
 
-        const Zone zone = safety_output( sensor_sample, 
-                                         camera_sample, 
-                                         now );
+        /************************************************************
+         Are there any faults detected?
+        ************************************************************/
+        const bool fault = is_stale( sensor_sample.time_ms, now, STALE_ZONE_LIMIT_MS   )
+                        || is_stale( camera_sample.time_ms, now, STALE_CAMERA_LIMIT_MS )
+                        || sensor_sample.fault;
 
-        if ( !last_printed 
-          || *last_printed != zone )
+        /************************************************************
+         Is the reset button pressed?
+        ************************************************************/
+        const bool reset = reset_requested.exchange( false );
+
+        /************************************************************
+         Decide what the zone should be based on sensors regardless
+         if they are faulting
+        ************************************************************/
+        const Zone normal = safety_output( sensor_sample, 
+                                           camera_sample, 
+                                           now );
+
+        /************************************************************
+         Latch if there are significant faults, and request human 
+         interaction (button press) to restart
+        ************************************************************/
+        const LatchState before_latch_state = latch.state();
+        const Zone zone = latch.update_latch( fault,
+                                              reset,
+                                              now,
+                                              normal );
+        const LatchState state = latch.state();
+        
+        /************************************************************
+         Report each reset press, so the log says whether it was
+         accepted or why it was ignored
+        ************************************************************/
+        if ( reset )
+            {
+            const char* result = "ignored: not latched";
+
+            if ( before_latch_state == LatchState::LATCHED )
+                {
+                /************************************************************
+                 Report sucessful reset if transitioning from LATCHED to OK
+                ************************************************************/
+                if ( state == LatchState::OK )
+                    {
+                    result = "accepted";
+                    }
+                /************************************************************
+                 Otherwise fault is still present, reset ignored
+                ************************************************************/
+                else
+                    {
+                    result = "ignored: fault present";
+                    }
+                }
+
+            std::cout << std::format( "[{:>6} ms] reset {}\n", now, result );               
+            }
+        
+        /************************************************************
+         Print on a zone change or a latch state change (and always
+         the first time). Check for empty before dereferencing
+        ************************************************************/
+        if ( !last_printed_zone  
+          || *last_printed_zone  != zone
+          || !last_printed_latch_state 
+          || *last_printed_latch_state != state )
             {
             /************************************************************
              Show "stale" instead of the last value, so the log says
@@ -656,14 +942,16 @@ int main()
 
             const char* camera_text  = camera_stale ? "STALE"    : cam_name( camera_sample.person );
             const char* camera_color = camera_stale ? "\033[31m" : cam_color( camera_sample.person );
-
-            std::cout << std::format( "[{:>6} ms] zone: {}{}{} (sensor: {}{}{}, camera: {}{}{})\n",
+        
+            std::cout << std::format( "[{:>6} ms] zone: {}{}{} latch: {}{}{} (sensor: {}{}{}, camera: {}{}{})\n",
                                       now,
-                                      zone_color( zone ), zone_name( zone ), COLOR_RESET,
-                                      sensor_color,       sensor_text,       COLOR_RESET,
-                                      camera_color,       camera_text,       COLOR_RESET );
-
-            last_printed = zone;
+                                      zone_color( zone ),   zone_name( zone ),   COLOR_RESET,
+                                      latch_color( state ), latch_name( state ), COLOR_RESET,
+                                      sensor_color,         sensor_text,         COLOR_RESET,
+                                      camera_color,         camera_text,         COLOR_RESET );
+        
+            last_printed_zone        = zone;
+            last_printed_latch_state = state;
             }
 
         std::this_thread::sleep_for( ZONE_CHECK_PERIOD );
@@ -673,6 +961,7 @@ int main()
 
     camera.join();
     worker.join();
+    keyboard_thread.join();
     sensor_thread.join();
 
     /************************************************************

@@ -11,6 +11,16 @@
                                     FUNCTIONS
 *************************************************************************************/
 
+/*****************************************************************************
+*
+*   PROCEDURE NAME:
+*       safety_output()
+*
+*   DESCRIPTION:
+*       Safety output logic based on the sensor and camera frame
+*
+*****************************************************************************/
+
 Zone safety_output( ZoneSample     sensor, 
                     CameraSample   camera, 
                     std::uint32_t  now )
@@ -20,7 +30,7 @@ Zone safety_output( ZoneSample     sensor,
      STOP if sensor detects something close (regardless of what 
      camera detects), or any samples are stale
     ************************************************************/
-    if ( is_stale( sensor.time_ms, now, STALE_ZONE_LIMIT_MS )
+    if ( is_stale( sensor.time_ms, now, STALE_ZONE_LIMIT_MS   )
       || is_stale( camera.time_ms, now, STALE_CAMERA_LIMIT_MS ) 
       || sensor.zone == Zone::STOP )
         {
@@ -43,7 +53,7 @@ Zone safety_output( ZoneSample     sensor,
         }
     /************************************************************
      If camera doesn't detect anything but sensor detects 
-     something is in clear or slow range, trust the sensor
+     something is in clear or slow zone, trust the sensor
     ************************************************************/
     else
         {

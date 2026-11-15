@@ -30,7 +30,8 @@ inline constexpr std::uint32_t STALE_ZONE_LIMIT_MS = 500;
 struct ZoneSample
     {
     Zone            zone;
-    std::uint32_t   time_ms;    // steady_clock time when published
+    bool            fault;
+    std::uint32_t   time_ms;
     };
 
 /************************************************************

@@ -9,6 +9,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)           # fail if the compiler can't do C+
 find_package(OpenCV REQUIRED)                                   # after project(...)
 find_package(Threads REQUIRED)
 
+option( FAULT_INJECTION "Test-only: 'f' key forces a sensor fault" OFF )
+
 #--------------------------------------------
 # safety_monitor
 #--------------------------------------------
@@ -19,11 +21,16 @@ add_executable(safety_monitor src/main.cpp
                               src/zone_monitor.cpp 
                               src/vl53l1_platform.cpp
                               src/i2c_device.cpp
-                              src/safety_output.cpp)
+                              src/safety_output.cpp
+                              src/safety_latch.cpp)
 target_include_directories(safety_monitor PRIVATE include)
 target_link_libraries(safety_monitor PRIVATE ${OpenCV_LIBS}
                                                vl53l1x_uld)
 target_compile_options(safety_monitor PRIVATE -Wall -Wextra -Wconversion)
+
+if ( FAULT_INJECTION )
+    target_compile_definitions( safety_monitor PRIVATE FAULT_INJECTION )
+endif()
 
 #--------------------------------------------
 # test_frame_queue
@@ -55,6 +62,14 @@ add_executable(test_safety_output tests/test_safety_output.cpp
                                   src/safety_output.cpp)
 target_include_directories(test_safety_output PRIVATE include)
 target_compile_options(test_safety_output PRIVATE -Wall -Wextra -Wconversion)
+
+#--------------------------------------------
+# test_safety_latch
+#--------------------------------------------
+add_executable(test_safety_latch tests/test_safety_latch.cpp
+                                 src/safety_latch.cpp)
+target_include_directories(test_safety_latch PRIVATE include)
+target_compile_options(test_safety_latch PRIVATE -Wall -Wextra -Wconversion)
 
 #--------------------------------------------
 # hw_test_i2c_device
