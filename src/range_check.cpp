@@ -69,7 +69,7 @@ int main()
                 /************************************************************
                  Count every status, but use the distance only if it is valid
                 ************************************************************/
-                status_counts[ sensor_reading->status ]++;
+                status_counts[ static_cast<std::uint8_t>( sensor_reading->status ) ]++;
         
                 if ( sensor_reading->valid() )
                     {

@@ -283,6 +283,6 @@ std::optional<RangeReading> Vl53l1xSensor::read()
         return( std::nullopt );
         }
 
-    return RangeReading{ range_status, distance };
+    return RangeReading{ static_cast<RangeStatus>( range_status ), distance };
 
     } /* read() */

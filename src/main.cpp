@@ -22,6 +22,7 @@
 #include "camera_sample.hpp"
 #include "safety_output.hpp"
 #include "safety_latch.hpp"
+#include "glitch_filter.hpp"
 
 
 /*************************************************************************************
@@ -213,7 +214,7 @@ void processing_loop( FrameQueue&                    queue,
          the queue to after pop and detection (now)
 
          NOTE: This time does NOT include time it takes light to hit
-         the sensor (negligable), the camera's own exposure (longer in 
+         the sensor (negligible), the camera's own exposure (longer in 
          dim conditions), internal processing, and USB transfer. 
          Latency time is in reality larger and must be budgeted 
          separately.
@@ -261,11 +262,14 @@ void sensor_loop( Vl53l1xSensor&               sensor,
     ************************************************************/
     constexpr auto  RETRY_DELAY = std::chrono::milliseconds( 10 );
 
-    ZoneMonitor     monitor;    
-    std::uint32_t   failed_reads       = 0;
-    std::uint32_t   invalid_readings   = 0;
-    std::uint8_t    last_logged_status = 0;
-    std::string     last_logged_error;
+    ZoneMonitor                monitor;    
+    GlitchFilter               glitch_filter; 
+    std::uint32_t              failed_reads       = 0;
+    std::uint32_t              invalid_readings   = 0;
+    RangeStatus                last_logged_status = RangeStatus::OK;
+    std::string                last_logged_error;
+    std::optional<RangeStatus> status;
+
 
     try
         {
@@ -277,6 +281,28 @@ void sensor_loop( Vl53l1xSensor&               sensor,
              no sleep needed on success
             ************************************************************/
             const std::optional<RangeReading> reading = sensor.read();
+
+            /************************************************************
+             Get the ranging status from the sensor reading
+            ************************************************************/
+            if ( reading )
+                {
+                status = reading->status; 
+                }
+            else
+                {
+                status = std::nullopt;
+                }
+
+            /************************************************************
+             Filter out certain errors/warnings that happen intermittently
+            ************************************************************/
+            if ( glitch_filter.hold_reading( status ) )
+                {
+//                std::cerr << std::format( "[{} ms] sensor status 7 ignored once (distance {} mm)\n",
+//                                          now_ms(), reading->distance_mm );
+                continue;
+                }
 
             /************************************************************
              Only a status-0 reading gives a distance; anything else
@@ -351,7 +377,10 @@ void sensor_loop( Vl53l1xSensor&               sensor,
                       || reading->status != last_logged_status )
                         {
                         std::cerr << std::format( "[{} ms] sensor range status {} (distance {} mm)\n",
-                                                  now_ms(), reading->status, reading->distance_mm );
+                                                  now_ms(), 
+                                                  static_cast<std::uint8_t>( reading->status ), 
+                                                  reading->distance_mm );
+
                         last_logged_status = reading->status;
                         }
                 
@@ -366,7 +395,7 @@ void sensor_loop( Vl53l1xSensor&               sensor,
                     std::cerr << std::format( "[{} ms] sensor status valid again after {} invalid readings\n",
                                               now_ms(), invalid_readings );
                     invalid_readings   = 0;
-                    last_logged_status = 0;
+                    last_logged_status = RangeStatus::OK;
                     }
 
                 } /* if ( reading ) */
@@ -500,7 +529,7 @@ std::optional<PersonDetector> make_detector( float min_confidence )
     try
         {
         /************************************************************
-         Consturct a detector object with specified minimum confidence
+         Construct a detector object with specified minimum confidence
         ************************************************************/
         return PersonDetector( "models/frozen_inference_graph.pb",
                                "models/ssd_mobilenet_v2_coco_2018_03_29.pbtxt",
@@ -700,7 +729,7 @@ int main()
     /************************************************************
      Open video capture; if not successfully, throw an error
      0 = /dev/video0 (or open by the stable name, 
-                      /def/video0 sometimes changes to video1 after replugs)
+                      /def/video0 sometimes changes to video1 after re-plugs)
      V4L2 = the Linux video system
     ************************************************************/
     //cv::VideoCapture cap( 0, cv::CAP_V4L2 );  
@@ -903,7 +932,7 @@ int main()
             if ( before_latch_state == LatchState::LATCHED )
                 {
                 /************************************************************
-                 Report sucessful reset if transitioning from LATCHED to OK
+                 Report successful reset if transitioning from LATCHED to OK
                 ************************************************************/
                 if ( state == LatchState::OK )
                     {

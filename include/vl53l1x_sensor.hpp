@@ -10,6 +10,8 @@
 #include "i2c_device.hpp"
 #include "vl53l1_platform_attachment.hpp"
 #include "vl53l1x_api.hpp"
+#include "glitch_filter.hpp"
+
 
 /*************************************************************************************
                                      CLASSES
@@ -31,11 +33,11 @@ class RangingSession
 
 struct RangeReading 
     {
-    std::uint8_t    status;
+    RangeStatus     status;
     std::uint16_t   distance_mm;
 
     // Only status 0 means distance_mm can be trusted
-    bool valid() const { return status == 0; }
+    bool valid() const { return status == RangeStatus::OK; }
     };
 
 
