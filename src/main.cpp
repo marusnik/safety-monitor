@@ -263,14 +263,12 @@ void sensor_loop( Vl53l1xSensor&               sensor,
     ************************************************************/
     constexpr auto  RETRY_DELAY = std::chrono::milliseconds( 10 );
 
-    ZoneMonitor                monitor;    
-    GlitchFilter               glitch_filter; 
-    std::uint32_t              failed_reads       = 0;
-    std::uint32_t              invalid_readings   = 0;
-    RangeStatus                last_logged_status = RangeStatus::OK;
-    std::string                last_logged_error;
-    std::optional<RangeStatus> status;
-
+    ZoneMonitor      monitor;    
+    GlitchFilter     glitch_filter; 
+    std::uint32_t    failed_reads       = 0;
+    std::uint32_t    invalid_readings   = 0;
+    RangeStatus      last_logged_status = RangeStatus::OK;
+    std::string      last_logged_error;
 
     try
         {
@@ -286,6 +284,8 @@ void sensor_loop( Vl53l1xSensor&               sensor,
             /************************************************************
              Get the ranging status from the sensor reading
             ************************************************************/
+            std::optional<RangeStatus> status;
+
             if ( reading )
                 {
                 status = reading->status; 
