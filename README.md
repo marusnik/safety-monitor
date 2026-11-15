@@ -21,7 +21,7 @@ system falls back to **STOP** whenever it is uncertain or its inputs go stale.
 | 3    | Pretrained person detector (OpenCV DNN)                                      | Done (one open question, see Open questions)                          |
 | 4    | Distance sensor (VL53L1X over I2C), zone logic with hysteresis               | Done (no recovery after a sensor fault yet, see Known issues)         |
 | 5    | ML safety monitor: confidence intervals, plausibility checks, fail-safe STOP | Planned                                                               |
-| 6    | Cross-checking the camera against the distance sensor                        | In progress (combined decision done; latched fault and reset pending) |
+| 6    | Cross-checking the camera against the distance sensor                        | In progress (combined decision, latched fault and reset done; no fault recovery yet) |
 | 7    | Rare-scenario validation set (low light, occlusion, ...)                     | Planned                                                               |
 | 8    | Profiling, sanitizers, CI                                                    | Planned                                                               |
 | 9    | Requirements traced to tests, safety argument                                | Planned                                                               |
@@ -116,6 +116,14 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ```
 
+Test build with fault injection (the `f` key forces a sensor fault, for testing the latch on
+hardware). The option stays in the build cache until it is switched off again:
+
+```bash
+cmake -S . -B build -DFAULT_INJECTION=ON     # test build: prints a red warning at startup
+cmake -S . -B build -DFAULT_INJECTION=OFF    # normal build
+```
+
 ## Running
 
 ```bash
@@ -127,8 +135,13 @@ cmake --build build
 ./build/test_thread_safe_queue    # thread-safe queue tests (two threads)
 ./build/test_zone_monitor         # zone logic and hysteresis tests
 ./build/test_safety_output        # combined camera + sensor decision tests
+./build/test_safety_latch         # latched fault: all 14 rows of the state table, timer wrap
 ./build/hw_test_i2c_device        # hardware test: needs the sensor connected
 ```
+
+While `safety_monitor` runs: `r` + Enter requests a reset; in a fault-injection build, `f` +
+Enter switches the forced sensor fault on or off. Stop it with Ctrl+C, not Ctrl+Z (Ctrl+Z only
+pauses it, and the paused process keeps the camera and the I2C bus).
 
 Run from the repository root, because the detector loads its model files from `models/`.
 No output from a test program means all tests passed (`hw_test_i2c_device` prints
@@ -151,6 +164,9 @@ include/
   camera_sample.hpp       CameraSample: person seen + capture timestamp in one lock-free atomic
   clock.hpp               steady-clock milliseconds (to_ms, now_ms), shared by both samples
   safety_output.hpp       safety_output(): combines the sensor and camera samples into one zone
+  safety_latch.hpp        SafetyLatch: OK / FAULT_PENDING / LATCHED; a persistent fault holds STOP until reset
+  range_status.hpp        RangeStatus: the driver's range status codes (UM2510 section 5)
+  glitch_filter.hpp       GlitchFilter: ignores a single wraparound (status 7) reading
 src/
   main.cpp                camera, processing and sensor threads; zone printout; report
   person_detector.cpp
@@ -160,6 +176,8 @@ src/
   vl53l1x_sensor.cpp      boot/ID/init checks, start/stop ranging, read()
   zone_monitor.cpp
   safety_output.cpp
+  safety_latch.cpp
+  glitch_filter.cpp
   range_check.cpp         command-line tool: ranging accuracy runs
   sensor_check.cpp        command-line tool: model ID check
 third_party/vl53l1x_uld/  ST's driver, unmodified
@@ -169,6 +187,7 @@ tests/
   test_thread_safe_queue.cpp
   test_zone_monitor.cpp
   test_safety_output.cpp
+  test_safety_latch.cpp
   hw_test_i2c_device.cpp  write, read back and restore a real sensor register
 ```
 
@@ -224,6 +243,15 @@ Other design points:
   ranging stops before the bus closes.
 - **The interrupt is cleared even after a failed read,** because otherwise an old result can look
   new on the next read.
+- **The range status is read as a raw byte and converted to `RangeStatus`.** Only `OK` (0) counts
+  as valid, so a code the driver returns that the enum doesn't name still gives STOP.
+- **A single wraparound (status 7) is ignored** (finding 13). One status 7 directly after a valid
+  reading is held: nothing is published, so the last sample simply ages and staleness still
+  applies. A second status 7 in a row, or one without a valid reading before it, gives STOP.
+  The cost: when a status 7 hides a real approach, STOP comes one reading (~100 ms, ~160 mm at
+  1.6 m/s) later.
+- **Timing budget:** the code does not set one, so the driver default of 100 ms applies (UM2510
+  section 3.6.3). This matches the ~100 ms reading period seen in finding 10.
 - **Readings are logged only on change** (first failure, different error, recovery): one line
   per retry would hide the line that matters, and writing to `cerr` that often can affect timing.
 - **Zones:** STOP below 500 mm, SLOW below 1500 mm, CLEAR beyond, with 100 mm hysteresis
@@ -268,11 +296,54 @@ Design decisions:
   would make the system stop so often that operators would work around it.
 - **Residual risk:** a person close to the machine but outside the sensor's cone is seen only by
   the camera, so the output is SLOW instead of STOP.
-- **After a persistent sensor fault, STOP latches until a manual reset**, because someone may
-  have entered the area during the fault, and the cause should be checked before the machine
-  runs again. A single failed read gives STOP without latching, because a latch on every glitch
-  would hurt availability. "Persistent" will be defined as a duration, not a count, because a
-  failed read takes ~10 ms or ~200 ms depending on how it fails. Not built yet.
+- **After a persistent fault, STOP latches until a manual reset**, because someone may have
+  entered the area during the fault, and the cause should be checked before the machine runs
+  again. A single failed read gives STOP without latching, because a latch on every glitch would
+  hurt availability. "Persistent" is a duration, not a count, because a failed read takes ~10 ms
+  or ~200 ms depending on how it fails.
+
+### Latched fault and reset
+
+```
+[keyboard thread]                 [main loop, every 100 ms]
+poll stdin (100 ms timeout)       fault = sensor fault || sensor stale || camera stale
+'r' -> reset_requested = true     reset = reset_requested.exchange(false)
+                                  zone  = latch.update_latch(fault, reset, now, safety_output(...))
+```
+
+**Only a fault latches, never a normal STOP.** A person standing close to the sensor is the
+system doing its job, so it must not need a reset. `ZoneSample` therefore carries a `fault`
+flag: without it, "invalid reading" and "person at 300 mm" were both just `Zone::STOP`.
+
+| State         | Fault now?          | Reset? | Next state    | Output          |
+|---------------|---------------------|--------|---------------|-----------------|
+| OK            | no                  | any    | OK            | `safety_output` |
+| OK            | yes                 | any    | FAULT_PENDING (record start) | STOP |
+| FAULT_PENDING | yes, under 500 ms   | any    | FAULT_PENDING | STOP            |
+| FAULT_PENDING | yes, 500 ms or more | any    | LATCHED       | STOP            |
+| FAULT_PENDING | no                  | any    | OK            | `safety_output` |
+| LATCHED       | yes                 | any    | LATCHED       | STOP            |
+| LATCHED       | no                  | no     | LATCHED       | STOP            |
+| LATCHED       | no                  | yes    | OK            | `safety_output` |
+
+(`test_safety_latch` covers the full 14-row version, with each reset case on its own row.)
+
+- **The output is STOP from the first faulty reading.** The 500 ms latch delay does not decide
+  when the machine stops; it decides whether a fault is forgiven automatically when it clears.
+  500 ms is the longest blind period accepted without a human check: about two failed reads.
+- **A reset is accepted only in `LATCHED` with no fault, and is never stored.** It is read and
+  cleared on every pass (`exchange(false)`). A stored reset would clear the latch by itself when
+  the fault ends later, which is an automatic restart.
+- **Only `OK` passes `safety_output()` through; every other state returns STOP,** so a
+  forgotten or corrupted state still fails safe.
+- **The latch is a pure function of its inputs, with the time passed in,** so the table is
+  tested without threads or hardware, including a fault that starts just before the 32-bit
+  timer wraps.
+- **The keyboard thread uses `poll()` with a 100 ms timeout,** so it can see `running` go false
+  and be joined at shutdown. A blocking `std::getline` would keep `join()` waiting forever.
+- **Fault injection is a compile-time option, off by default** (see Building). The forced fault
+  goes through the same path as a real invalid reading, and a test build prints a warning at
+  startup so it can't be mistaken for a normal one.
 
 ## Findings
 
@@ -453,6 +524,44 @@ of both channels (output SLOW), then the camera unplugged and left out.
   removing the rule it covers and seeing it fail. Running the tests on every build (CTest) is
   planned for week 8.
 
+### 13. Status 7 (wraparound) when a target enters or leaves the cone
+
+With nothing covering the sensor, single invalid readings showed up during normal movement.
+Logging the range status on change showed what they were. One 2-minute run (walking between
+SLOW and STOP, fast hand passes, walking towards and away from the sensor):
+
+| What | Data |
+|------|------|
+| Invalid readings | 9 in 2 minutes |
+| Status | **7 every time** |
+| How long | **one reading each**, valid again ~100 ms later |
+| Distance reported with it | 448–2411 mm |
+| When | mostly as a target entered or left the cone |
+
+- **UM2510 section 5:** status 7 is "wraparound". A very reflective target beyond the sensor's
+  range (~5 m in Long mode) can show up at a short distance ("radar aliasing"). The driver
+  returns five statuses: 0 valid, 1 and 2 are warnings, 4 and 7 are errors.
+- **The reported distance can't be trusted:** two of the readings were 448 and 581 mm, inside
+  or near the STOP zone. Treating status 7 as "far away, CLEAR" would be unsafe.
+- **Before the filter, each one gave a ~100 ms STOP,** about 5 a minute in this run: safe, but
+  the kind of nuisance stop that makes operators work around a monitor. This is why a single
+  status 7 is now ignored (see Distance sensor path).
+- **Short distance mode doesn't help:** it wraps at ~1.3 m, less than the 1.5 m SLOW zone.
+
+### 14. Latched fault and reset on hardware
+
+| Test | What happened | Result |
+|------|---------------|--------|
+| Startup | Stale samples → `FAULT_PENDING`, then `OK` 100 ms later when data arrived | No reset needed at startup (see Known issues) |
+| `r` while `OK` | "reset ignored: not latched" | As designed |
+| Camera unplugged | `FAULT_PENDING`, then `LATCHED` 501 ms later | As designed |
+| `r` with the camera still unplugged | "reset ignored: fault present" | As designed |
+| Finger over the sensor | Only single invalid readings: `FAULT_PENDING` for 100 ms, never `LATCHED` | Not a persistent fault, so fault injection was added |
+| `f` (forced sensor fault) on | `FAULT_PENDING`, then `LATCHED` exactly 500 ms later | As designed |
+| `r` with the fault on | "reset ignored: fault present" | As designed |
+| `f` off | Still `LATCHED`: no automatic restart | As designed |
+| `r` | "reset accepted" → `OK`, output follows the sensor again | As designed |
+
 ## Models
 
 | Item         | Value                                                                             |
@@ -481,15 +590,31 @@ validation set against a stated missed-detection requirement, not by eye.
 
 ## Known issues
 
-- **No recovery after a sensor or camera fault.** Both stay failed until the program restarts.
-  This is safe (both give STOP), but not available. Planned: a latched fault with a manual reset
-  (see the design decisions above), sensor re-init and camera re-open.
+- **No recovery after an unplug.** The latch and reset work (finding 14), but a replugged sensor
+  has reset to its defaults and a replugged camera's handle points to a device that is gone, so
+  the fault never clears and a reset is never accepted. Safe (STOP), but not available until
+  the program restarts. Planned: sensor re-init and camera re-open.
+- **Startup depends on timing.** Both initial samples are stale, so the latch starts in
+  `FAULT_PENDING`. If the first data arrives within 500 ms it goes to `OK` without a reset;
+  otherwise it latches. Not decided yet: start in `LATCHED`, so every power-up needs a reset.
+- **Reset is not start.** After "reset accepted" the output follows `safety_output()` at once
+  and can go straight to CLEAR. A real machine needs a separate start command after a reset.
+- **Intermittent faults never latch.** A fault that keeps coming back for less than 500 ms at a
+  time stays in `FAULT_PENDING` → `OK` (seen with a finger over the sensor, finding 14). Every
+  fault still gives STOP, so it is safe, but repeated glitches are never flagged. Later: count
+  faults in a time window.
+- **The main loop only sees the latest sample every 100 ms,** so a fault that comes and goes
+  between two passes is missed by the latch (the output is not affected for longer than one
+  reading).
+- **The glitch filter has no unit tests.** Single status 7s being ignored can be seen on
+  hardware, but "two in a row → STOP" and "status 7 right after startup → STOP" can't be produced
+  on demand, and nothing checks them yet. Held readings are not logged.
 - **One missed detection drops SLOW to CLEAR immediately** (finding 8: 68 of 77 frames in dim
   light). Planned for week 5: hold "person present" for a short time after the last detection.
 - **The 500 ms stale limits (sensor and camera) are provisional.** At 1.6 m/s, 500 ms is 800 mm,
-  more than the whole STOP zone, and the end-to-end reaction is ~600 ms (finding 12). It must stay above the slowest normal update (the timing budget plus how long
-  `read()` can block) and below what the safety distance allows. The timing budget has not been
-  read from the sensor yet.
+  more than the whole STOP zone, and the end-to-end reaction is ~600 ms (finding 12). They must
+  stay above the slowest normal update (the 100 ms timing budget, plus one held status-7
+  reading, plus how long `read()` can block) and below what the safety distance allows.
 - **The millisecond timestamp is 32 bits and wraps every 49.7 days.** If the sensor thread hung
   for that long, an old sample would briefly look fresh again. A 64-bit timestamp would make
   `ZoneSample` 16 bytes, which may no longer be lock-free on the Pi (the `static_assert` would
