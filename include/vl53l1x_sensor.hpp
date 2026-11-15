@@ -10,7 +10,7 @@
 #include "i2c_device.hpp"
 #include "vl53l1_platform_attachment.hpp"
 #include "vl53l1x_api.hpp"
-#include "glitch_filter.hpp"
+#include "range_status.hpp"
 
 
 /*************************************************************************************

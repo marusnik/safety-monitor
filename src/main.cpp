@@ -23,6 +23,7 @@
 #include "safety_output.hpp"
 #include "safety_latch.hpp"
 #include "glitch_filter.hpp"
+#include "range_status.hpp"
 
 
 /*************************************************************************************
