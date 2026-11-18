@@ -24,20 +24,14 @@
 #include "safety_latch.hpp"
 #include "glitch_filter.hpp"
 #include "range_status.hpp"
-
-
-/*************************************************************************************
-                                     CONSTANTS
-*************************************************************************************/
-
-inline constexpr const char* COLOR_RESET = "\033[0m";
+#include "console_format.hpp"
 
 
 /*************************************************************************************
                                       CLASSES
 *************************************************************************************/
 /************************************************************
- In normal light detector is slower than camera. Choosing 
+ In normal light, detector is slower than camera. Choosing 
  Capacity = 1 means less latency since frames get dropped
 ************************************************************/
 using FrameQueue = ThreadSafeQueue< Frame, 1 >;
@@ -58,17 +52,25 @@ using FrameQueue = ThreadSafeQueue< Frame, 1 >;
 *
 *****************************************************************************/
 
-void camera_loop( cv::VideoCapture &         cap, 
-                  FrameQueue &               queue,
-                  const std::atomic<bool> &  running, 
-                  CaptureStats &             stats )
+static void camera_loop( cv::VideoCapture &         cap, 
+                         FrameQueue &               queue,
+                         const std::atomic<bool> &  running, 
+                         CaptureStats &             stats )
     {
-
+    /************************************************************
+     Local variables
+    ************************************************************/
     std::uint64_t    sequence = 0;
 
-    while ( running )                              // checks the flag every iteration
+    /************************************************************
+     Read video capture every iteration 
+    ************************************************************/
+    while ( running )
         {                              
-        Frame f;                                   // fresh Frame → fresh pixel buffer
+       /************************************************************
+        Fresh Frame
+       ************************************************************/
+        Frame f;
 
         /************************************************************
          Mark as failed if camera can't read or image is empty
@@ -76,8 +78,12 @@ void camera_loop( cv::VideoCapture &         cap,
         if ( !cap.read( f.image ) 
           || f.image.empty() ) 
             {
+            /************************************************************
+             If failed, update the stats and sleep for a little bit. No
+             need to burn the CPU in case camera is unplugged
+            ************************************************************/
             ++stats.failed;
-            std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) ); // in case camera is unplugged no need to burn the CPU
+            std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
             continue;
             }
 
@@ -89,7 +95,10 @@ void camera_loop( cv::VideoCapture &         cap,
 
         /************************************************************
          Push into the queue and count drops
-        ************************************************************/        
+         Move the frame into the queue, so the queue becomes the only
+         owner of the pixel buffer. A cv::Mat copy would share the
+         pixels with this thread
+        ************************************************************/
         if ( queue.push( std::move( f ) ) == PushResult::ADDED_DROPPED_OLDEST )
             {
             ++stats.dropped;
@@ -118,21 +127,21 @@ void camera_loop( cv::VideoCapture &         cap,
 *
 *****************************************************************************/
 
-void processing_loop( FrameQueue&                    queue, 
-                      ProcessStats&                  stats,
-                      PersonDetector&                detector,
-                      std::atomic<CameraSample>&     latest_cam_sample )
+static void processing_loop( FrameQueue&                    queue, 
+                             ProcessStats&                  stats,
+                             PersonDetector&                detector,
+                             std::atomic<CameraSample>&     latest_cam_sample )
     {
     /************************************************************
-                            CONSTANTS
+     Local constants
     ************************************************************/
     constexpr int64_t    WAIT_FOR_NEW_FRAME_MS = 500;
 
     /************************************************************
-                            VARIABLES
+     Local variables
     ************************************************************/
     Frame            f;
-    std::uint32_t    timeouts_in_row = 0; // how many timeout happened in a row 
+    std::uint32_t    timeouts_in_row = 0; /* how many timeouts happened in a row */
 
     /************************************************************
      Loop until shutdown
@@ -140,7 +149,7 @@ void processing_loop( FrameQueue&                    queue,
     while ( true ) 
         {
         /************************************************************
-         Pop the frame from the queue
+         Pop the frame from the queue, wait for WAIT_FOR_NEW_FRAME_MS
         ************************************************************/
         PopResult r = queue.pop_wait( f, std::chrono::milliseconds( WAIT_FOR_NEW_FRAME_MS ) );
 
@@ -243,19 +252,20 @@ void processing_loop( FrameQueue&                    queue,
 *       sensor_loop()
 *
 *   DESCRIPTION:
-*       Sensor thread: the only owner of the ToF driver. Turns each reading
-*       into a zone and publishes it with a timestamp, so that readers can
-*       detect a hung or dead thread. Any failure publishes STOP.
+*       Sensor thread: the only owner of the time of flight driver. 
+*       Turns each reading into a zone and publishes it with a timestamp, 
+*       so that readers can detect a hung or dead thread. 
+*       Any failure publishes STOP.
 *
 *****************************************************************************/
 
-void sensor_loop( Vl53l1xSensor&               sensor,
-                  std::atomic<ZoneSample>&     latest,
-                  const std::atomic<bool>&     running 
+static void sensor_loop( Vl53l1xSensor&               sensor,
+                         std::atomic<ZoneSample>&     latest,
+                         const std::atomic<bool>&     running 
 #ifdef FAULT_INJECTION
-                  , std::atomic<bool>&         inject_fault
+                         , std::atomic<bool>&         inject_fault
 #endif
-                                                       )
+                                                                   )
     {
     /************************************************************
      Short pause after a failed read, so that a dead bus can't
@@ -263,6 +273,9 @@ void sensor_loop( Vl53l1xSensor&               sensor,
     ************************************************************/
     constexpr auto  RETRY_DELAY = std::chrono::milliseconds( 10 );
 
+    /************************************************************
+     Local variables
+    ************************************************************/
     ZoneMonitor      monitor;    
     GlitchFilter     glitch_filter; 
     std::uint32_t    failed_reads       = 0;
@@ -300,6 +313,7 @@ void sensor_loop( Vl53l1xSensor&               sensor,
             ************************************************************/
             if ( glitch_filter.hold_reading( status ) )
                 {
+//                Don't print during the testing phase. Easier to test with less noise. TODO: put this back
 //                std::cerr << std::format( "[{} ms] sensor status 7 ignored once (distance {} mm)\n",
 //                                          now_ms(), reading->distance_mm );
                 continue;
@@ -307,7 +321,7 @@ void sensor_loop( Vl53l1xSensor&               sensor,
 
             /************************************************************
              Only a status-0 reading gives a distance; anything else
-             goes to the monitor as nullopt, which means STOP
+             goes to the monitor as nullopt, which ends up in STOP
             ************************************************************/
             std::optional<std::uint16_t> distance_mm;
 
@@ -331,7 +345,7 @@ void sensor_loop( Vl53l1xSensor&               sensor,
              Publish even on failure, because "sensor not working, so
              STOP" is fresh information too
             ************************************************************/
-            const Zone zone = monitor.update( distance_mm );
+            const Zone zone  = monitor.update( distance_mm );
             const bool fault = !distance_mm;
             latest.store( ZoneSample{ zone, fault, now_ms() } );
 
@@ -435,12 +449,12 @@ void sensor_loop( Vl53l1xSensor&               sensor,
 *
 *****************************************************************************/
 
-void keyboard_loop( std::atomic<bool>&          reset_requested,
-                    const std::atomic<bool>&    running 
+static void keyboard_loop( std::atomic<bool>&          reset_requested,
+                           const std::atomic<bool>&    running 
 #ifdef FAULT_INJECTION
-                  , std::atomic<bool>&          inject_fault
+                         , std::atomic<bool>&          inject_fault
 #endif
-                                                                )
+                                                                       )
    {
 
     while ( running )
@@ -525,7 +539,7 @@ void keyboard_loop( std::atomic<bool>&          reset_requested,
 *
 *****************************************************************************/
 
-std::optional<PersonDetector> make_detector( float min_confidence )
+static std::optional<PersonDetector> make_detector( float min_confidence )
     {
     try
         {
@@ -548,149 +562,6 @@ std::optional<PersonDetector> make_detector( float min_confidence )
 /*****************************************************************************
 *
 *   PROCEDURE NAME:
-*       zone_name()
-*
-*   DESCRIPTION:
-*       Returns a printable name for a zone
-*       TODO: move all the *_name() and *_color() into a separate file
-*
-*****************************************************************************/
-
-const char* zone_name( Zone zone )
-    {
-    switch ( zone )
-        {
-        case Zone::CLEAR: return "CLEAR";
-        case Zone::SLOW:  return "SLOW";
-        case Zone::STOP:  return "STOP";
-        }
-
-    return "UNKNOWN";   // unreachable, but makes -Wall/-Wextra happy
-
-    } /* zone_name() */
-
-
-/*****************************************************************************
-*
-*   PROCEDURE NAME:
-*       zone_color()
-*
-*   DESCRIPTION:
-*       ANSI terminal colors, so zone changes stand out in the log
-*
-*****************************************************************************/
-
-inline const char* zone_color( Zone z )
-    {
-    switch ( z )
-        {
-        case Zone::CLEAR: return "\033[32m";   // green
-        case Zone::SLOW:  return "\033[33m";   // yellow
-        case Zone::STOP:  return "\033[31m";   // red
-        }
-
-    return "\033[0m";
-
-    } /* zone_color() */
-
-
-/*****************************************************************************
-*
-*   PROCEDURE NAME:
-*       cam_name()
-*
-*   DESCRIPTION:
-*       Returns a printable name for a person present or not
-*
-*****************************************************************************/
-
-const char* cam_name( bool person_present )
-    {
-    switch ( person_present )
-        {
-        case true:  return "Person Present";
-        case false: return "Person NOT Present";
-        }
-
-    return "UNKNOWN";   // unreachable, but makes -Wall/-Wextra happy
-
-    } /* cam_name() */
-
-
-/*****************************************************************************
-*
-*   PROCEDURE NAME:
-*       cam_color()
-*
-*   DESCRIPTION:
-*       ANSI terminal colors, so person detection stand out in the log
-*
-*****************************************************************************/
-
-inline const char* cam_color( bool person_present )
-    {
-    switch ( person_present )
-        {
-        case true:  return "\033[32m";   // green
-        case false: return "\033[31m";   // red
-        }
-
-    return "\033[0m";
-
-    } /* cam_color() */
-
-
-/*****************************************************************************
-*
-*   PROCEDURE NAME:
-*       latch_name()
-*
-*   DESCRIPTION:
-*       Returns a printable name for the current latch state
-*
-*****************************************************************************/
-
-const char* latch_name( LatchState s )
-    {
-    switch ( s )
-        {
-        case LatchState::OK:            return "OK";
-        case LatchState::FAULT_PENDING: return "FAULT_PENDING";
-        case LatchState::LATCHED:       return "LATCHED";
-        }
-
-    return "UNKNOWN";   // unreachable, but makes -Wall/-Wextra happy
-
-    } /* latch_name() */
-
-
-/*****************************************************************************
-*
-*   PROCEDURE NAME:
-*       latch_color()
-*
-*   DESCRIPTION:
-*       ANSI terminal colors, so latch state changes stand out in the log
-*
-*****************************************************************************/
-
-inline const char* latch_color( LatchState latch_state )
-    {
-    switch ( latch_state )
-        {
-        case LatchState::OK:             return "\033[32m";   // green
-        case LatchState::FAULT_PENDING:  return "\033[33m";   // yellow
-        case LatchState::LATCHED:        return "\033[31m";   // red
-        }
-
-    return "\033[0m";
-
-    } /* latch_color() */
-
-
-/*****************************************************************************
-*
-*   PROCEDURE NAME:
 *       main
 *
 *   DESCRIPTION:
@@ -704,9 +575,9 @@ int main()
     /*************************************************************************************
                                         CONSTANTS
     *************************************************************************************/
-    constexpr std::uint32_t     WARMUP_READ_FRAME_NUM =  10;
+    constexpr std::uint32_t     WARMUP_READ_FRAME_NUM =   10;
     constexpr std::uint32_t     CAM_RUN_PERIOD_SEC    =  120;    /* !!! has to be different than zero */
-    constexpr float             MIN_CONFIDENCE        =   0.3f;
+    constexpr float             MIN_CONFIDENCE        =    0.3f;
 
     static_assert( CAM_RUN_PERIOD_SEC > 0, "Run period must be positive" );
 
@@ -967,11 +838,11 @@ int main()
             const bool sensor_stale = is_stale( sensor_sample.time_ms, now, STALE_ZONE_LIMIT_MS );
             const bool camera_stale = is_stale( camera_sample.time_ms, now, STALE_CAMERA_LIMIT_MS );
 
-            const char* sensor_text  = sensor_stale ? "STALE"    : zone_name( sensor_sample.zone );
-            const char* sensor_color = sensor_stale ? "\033[31m" : zone_color( sensor_sample.zone );
+            const char* sensor_text  = sensor_stale ? "STALE" : zone_name(  sensor_sample.zone );
+            const char* sensor_color = sensor_stale ? RED :     zone_color( sensor_sample.zone );
 
-            const char* camera_text  = camera_stale ? "STALE"    : cam_name( camera_sample.person );
-            const char* camera_color = camera_stale ? "\033[31m" : cam_color( camera_sample.person );
+            const char* camera_text  = camera_stale ? "STALE" : cam_name(  camera_sample.person );
+            const char* camera_color = camera_stale ? RED :     cam_color( camera_sample.person );
         
             std::cout << std::format( "[{:>6} ms] zone: {}{}{} latch: {}{}{} (sensor: {}{}{}, camera: {}{}{})\n",
                                       now,

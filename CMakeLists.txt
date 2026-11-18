@@ -23,7 +23,8 @@ add_executable(safety_monitor src/main.cpp
                               src/i2c_device.cpp
                               src/safety_output.cpp
                               src/safety_latch.cpp
-                              src/glitch_filter.cpp)
+                              src/glitch_filter.cpp
+                              src/console_format.cpp)
 target_include_directories(safety_monitor PRIVATE include)
 target_link_libraries(safety_monitor PRIVATE ${OpenCV_LIBS}
                                                vl53l1x_uld)

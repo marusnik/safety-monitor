@@ -21,14 +21,14 @@ template <typename T, std::size_t Capacity>
 class ThreadSafeQueue {
 
     public:
-        PushResult                 push( T value );                                // camera thread
+        PushResult                 push( T value );                                /* camera thread                     */
         PopResult                  pop_wait( T&                        out, 
-                                             std::chrono::milliseconds timeout ); // processing thread: waits for data
-        void                       close();                                       // shutdown: wake up anyone waiting
+                                             std::chrono::milliseconds timeout );  /* processing thread: waits for data */
+        void                       close();                                        /* shutdown: wake up anyone waiting  */
 
     private:
-        RingBuffer<T, Capacity>    buffer_;                                       // the existing circular buffer
-        std::mutex                 mutex_;                                        // protects buffer_ and closed_
+        RingBuffer<T, Capacity>    buffer_;                                        /* the existing circular buffer      */
+        std::mutex                 mutex_;                                         /* protects buffer_ and closed_      */
         std::condition_variable    not_empty_;
         bool                       closed_ = false;
     };
